@@ -92,7 +92,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             for dir in d:
                 for r,d,f in os.walk(str(dir)):
                     for file in f:
-                        if ".jpg" in file:
+                        if ".png" in file:
                             filenames.append(os.path.join(r, file))
                         elif ".zip" in file:
                             zips.append(os.path.join(r, file))
@@ -139,13 +139,10 @@ class Cell(QMainWindow, Ui_MainWindow):
                         length = len(list(roi.values()))
                         self.progressBar.setMaximum(length)
                         for a in range(length):
-                            filename2 = filename.replace(".jpg", "").replace("-", " ").split(" ")
+                            filename2 = filename.replace(".png", "").replace("-", " ").split(" ")
                             roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
                             filenum = ""
-                            if ".tif" in filename2[5]:
-                                index = 4
-                            else:
-                                index = 5
+                            index = 2
                             if int(filename2[index]) > 10 and int(filename2[index]) < 100:
                                 filenum = "00" + str(filename2[index])
                             elif int(filename2[index]) > 100 and int(filename2[index]) < 1000:
@@ -195,14 +192,14 @@ class Cell(QMainWindow, Ui_MainWindow):
 
     def gpu_train_func(self):
         self.append("Training in GPU...")
-        DEVICE = "/gpu:0"
+        self.DEVICE = "/gpu:0"
 
     def cpu_train_func(self):
         self.append("Training in CPU...")
-        DEVICE = "/cpu:0"
+        self.DEVICE = "/cpu:0"
 
     def train(self):
-	self.epoches = int(self.epochs.toPlainText())
+        self.epoches = int(self.epochs.toPlainText())
         self.confidence = float(self.conf_rate.toPlainText())
         # Root directory of the project
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -264,7 +261,7 @@ class Cell(QMainWindow, Ui_MainWindow):
 
                 # Load annotations
                 # VGG Image Annotator saves each image in the form:
-                # { 'filename': '28503151_5b5b7ec140_b.jpg',
+                # { 'filename': '28503151_5b5b7ec140_b.png',
                 #   'regions': {
                 #       '0': {
                 #           'region_attributes': {},
@@ -483,12 +480,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*.png"):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(".png", "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -596,12 +593,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*.png"):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(".png", "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -612,7 +609,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             results = model.detect([image], verbose=0)
 
             r = results[0]
-            mrcnn.visualize.save_image(image, str(j)+"-anot.jpg",r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
+            mrcnn.visualize.save_image(image, str(j)+"-anot.png",r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
     
     def detect_BW(self):
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -685,11 +682,11 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*.png"):
             filenames.append(f)
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(".png", "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -705,7 +702,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             for a in range(len(r['masks'][0][0])):
                 mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
                 img = Image.fromarray(mask, 'L')
-                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(".jpg","")+str(a)+".jpg")
+                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(".png","")+str(a)+".png")
 ###############################################
     def get_sets(self):
         dir_choose = QFileDialog.getExistingDirectory(
