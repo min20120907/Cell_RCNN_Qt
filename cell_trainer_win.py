@@ -116,7 +116,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                         try:
                             f = open("via_region_data.json")
                             original = json.loads(f.read())
-                            print("Writing..."+str(zips[j]))
+                            #print("Writing..."+str(zips[j]))
                             # Do something with the file
                         except FileNotFoundError:
                             print("File not exisited, creating new file...")
@@ -144,13 +144,13 @@ class Cell(QMainWindow, Ui_MainWindow):
                             filenum = ""
                             index = 2
                             if int(filename2[index]) > 10 and int(filename2[index]) < 100:
-                                filenum = "00" + str(filename2[index])
+                                filenum = "00" + str(int(filename2[index]))
                             elif int(filename2[index]) > 100 and int(filename2[index]) < 1000:
-                                filenum = "0" + str(filename2[index])
+                                filenum = "0" + str(int(filename2[index]))
                             elif int(filename2[index]) > 1 and int(filename2[index]) < 10:
-                                filenum = "000" + str(filename2[index])
+                                filenum = "000" + str(int(filename2[index]))
                             elif int(filename2[index]) > 1000 and int(filename2[index]) < 10000:
-                                filenum = str(filename2[index])
+                                filenum = str(int(filename2[index]))
 
                             if filenum == roi_name[0]:
                                 print("roi_name: ", roi_name[0], "filename: ", filenum)
