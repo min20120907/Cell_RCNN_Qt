@@ -358,7 +358,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             self.append("Training network heads")
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
-                        epochs=self.epoches,
+                        epochs=100,
                         layers='heads')
 
         ############################################################
