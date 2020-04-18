@@ -202,7 +202,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         DEVICE = "/cpu:0"
 
     def train(self):
-
+	self.epoches = int(self.epochs.toPlainText())
+        self.confidence = float(self.conf_rate.toPlainText())
         # Root directory of the project
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
         # Import Mask RCNN

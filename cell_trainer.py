@@ -61,8 +61,7 @@ class Cell(QMainWindow, Ui_MainWindow):
 
         self.setupUi(self)
         #TextArea Events
-        self.epoches = int(self.epochs.toPlainText())
-        self.confidence = float(self.conf_rate.toPlainText())
+        
         #Button Events
         self.train_btn.clicked.connect(self.train)
         self.detect_btn.clicked.connect(self.detect)
@@ -79,6 +78,10 @@ class Cell(QMainWindow, Ui_MainWindow):
         
         ################################################
     def zip2coco(self):
+        epoches = int(self.epochs.toPlainText())
+        confidence = float(self.conf_rate.toPlainText())
+        self.append(str(self.epoches))
+        self.append(str(self.confidence))
         self.get_coco()
         os.chdir(self.coco_path)
         path ="."
@@ -202,7 +205,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         DEVICE = "/cpu:0"
 
     def train(self):
-
+        self.epoches = int(self.epochs.toPlainText())
+        self.confidence = float(self.conf_rate.toPlainText())
         # Root directory of the project
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
         # Import Mask RCNN
