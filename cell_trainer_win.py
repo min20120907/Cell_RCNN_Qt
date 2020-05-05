@@ -142,15 +142,14 @@ class Cell(QMainWindow, Ui_MainWindow):
                             filename2 = filename.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")
                             roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
                             filenum = ""
-                            index = 2
-                            if int(filename2[index]) > 10 and int(filename2[index]) < 100:
-                                filenum = "00" + str(int(filename2[index]))
-                            elif int(filename2[index]) > 100 and int(filename2[index]) < 1000:
-                                filenum = "0" + str(int(filename2[index]))
-                            elif int(filename2[index]) > 1 and int(filename2[index]) < 10:
-                                filenum = "000" + str(int(filename2[index]))
-                            elif int(filename2[index]) > 1000 and int(filename2[index]) < 10000:
-                                filenum = str(int(filename2[index]))
+                            if int(filename2[:1]) > 10 and int(filename2[:1]) < 100:
+                                filenum = "00" + str(int(filename2[:1]))
+                            elif int(filename2[:1]) > 100 and int(filename2[:1]) < 1000:
+                                filenum = "0" + str(int(filename2[:1]))
+                            elif int(filename2[:1]) > 1 and int(filename2[:1]) < 10:
+                                filenum = "000" + str(int(filename2[:1]))
+                            elif int(filename2[:1]) > 1000 and int(filename2[:1]) < 10000:
+                                filenum = str(int(filename2[:1]))
 
                             if filenum == roi_name[0]:
                                 print("roi_name: ", roi_name[0], "filename: ", filenum)
