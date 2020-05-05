@@ -95,7 +95,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             for dir in d:
                 for r,d,f in os.walk(str(dir)):
                     for file in f:
-                        if ".jpg" in file:
+                        if self.format_txt.toPlainText() in file:
                             filenames.append(os.path.join(r, file))
                         elif ".zip" in file:
                             zips.append(os.path.join(r, file))
@@ -142,7 +142,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                         length = len(list(roi.values()))
                         self.progressBar.setMaximum(length)
                         for a in range(length):
-                            filename2 = filename.replace(".jpg", "").replace("-", " ").split(" ")
+                            filename2 = filename.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")
                             roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
                             filenum = ""
                             if ".tif" in filename2[5]:
@@ -400,7 +400,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                                           model_dir=self.WORK_DIR+"/logs")
 
             weights_path = COCO_WEIGHTS_PATH
-            # Download weights file
+            # Download weights filet
             if not os.path.exists(weights_path):
                 utils.download_trained_weights(weights_path)
 
@@ -486,12 +486,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -599,12 +599,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -615,7 +615,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             results = model.detect([image], verbose=0)
 
             r = results[0]
-            mrcnn.visualize.save_image(image, str(j)+"-anot.jpg",r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
+            mrcnn.visualize.save_image(image, str(j)+"-anot"+self.format_txt.toPlainText(),r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
     
     def detect_BW(self):
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -688,11 +688,11 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -708,7 +708,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             for a in range(len(r['masks'][0][0])):
                 mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
                 img = Image.fromarray(mask, 'L')
-                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(".jpg","")+str(a)+".jpg")
+                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(self.format_txt.toPlainText(),"")+str(a)+self.format_txt.toPlainText())
 ###############################################
     def get_sets(self):
         dir_choose = QFileDialog.getExistingDirectory(
