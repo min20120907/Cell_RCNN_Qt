@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
+
 def launch_Selenium_Thread(self):
         t = threading.Thread(target=self.log)
         t.start()
 #ImageJ tensorflow Python 3.8 Dependencies
 import subprocess
 import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import struct
 import sys
 import random
@@ -31,6 +33,7 @@ import progressbar
 import time
 import logging
 logging.getLogger('tensorflow').disabled = True
+logging.getLogger('numpy').disabled = True
 #PyQt5 Dependencies
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QApplication, QListView, QFileDialog
@@ -145,15 +148,15 @@ class Cell(QMainWindow, Ui_MainWindow):
                             filename2 = filename.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")
                             roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
                             filenum = ""
-                            
-                            if int(filename2[:1]) > 10 and int(filename2[:1]) < 100:
-                                filenum = "00" + str(filename2[:1])
-                            elif int(filename2[:1]) > 100 and int(filename2[:1]) < 1000:
-                                filenum = "0" + str(filename2[:1])
-                            elif int(filename2[:1]) > 1 and int(filename2[:1]) < 10:
-                                filenum = "000" + str(filename2[:1])
-                            elif int(filename2[:1]) > 1000 and int(filename2[:1]) < 10000:
-                                filenum = str(filename2[:1])
+
+                            if int(filename2[-1]) > 10 and int(filename2[-1]) < 100:
+                                filenum = "00" + str(int(filename2[-1]))
+                            elif int(filename2[-1]) > 100 and int(filename2[-1]) < 1000:
+                                filenum = "0" + str(int(filename2[-1]))
+                            elif int(filename2[-1]) > 1 and int(filename2[-1]) < 10:
+                                filenum = "000" + str(int(filename2[-1]))
+                            elif int(filename2[-1]) > 1000 and int(filename2[-1]) < 10000:
+                                filenum = str(int(filename2[-1]))
 
                             if filenum == roi_name[0]:
                                 print("roi_name: ", roi_name[0], "filename: ", filenum)
@@ -238,7 +241,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             NUM_CLASSES = 1 + 1 # Background + toy
 
             # Number of training steps per epoch
-            STEPS_PER_EPOCH = self.epoches
+            STEPS_PER_EPOCH = 10
 
             # Skip detections with < 90% confidence
             DETECTION_MIN_CONFIDENCE = self.confidence
@@ -412,7 +415,6 @@ class Cell(QMainWindow, Ui_MainWindow):
             # Train or evaluate
             train(model)
     def detect(self):
-        #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
         #print(ROOT_DIR)
         # Import Mask RCNN
