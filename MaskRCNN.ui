@@ -13,6 +13,10 @@
   <property name="windowTitle">
    <string>RCNN Cell Segmentation</string>
   </property>
+  <property name="windowIcon">
+   <iconset>
+    <normaloff>../../../../../home/min20120907/下載/icon.ppm</normaloff>../../../../../home/min20120907/下載/icon.ppm</iconset>
+  </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QPushButton" name="train_btn">
     <property name="geometry">

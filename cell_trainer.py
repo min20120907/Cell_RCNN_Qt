@@ -62,8 +62,14 @@ class Cell(QMainWindow, Ui_MainWindow):
             data = json.loads(f.read())
         f= data
         self.epoches = f['epoches']
+        self.epochs.setText(str(f['epoches']))
         self.confidence = f['confidence']
+        self.conf_rate.setText(str(f['confidence']))
         self.DEVICE = f['DEVICE']
+        if(self.DEVICE=="/cpu:0"):
+            self.cpu_train.toggle()
+        elif(self.DEVICE=="/gpu:0"):
+            self.gpu_train.toggle()
         self.dataset_path = f['dataset_path']
         self.WORK_DIR = f['WORK_DIR']
         self.ROI_PATH = f['ROI_PATH']
@@ -222,11 +228,11 @@ class Cell(QMainWindow, Ui_MainWindow):
 
     def gpu_train_func(self):
         self.append("Training in GPU...")
-        DEVICE = "/gpu:0"
+        self.DEVICE = "/gpu:0"
 
     def cpu_train_func(self):
         self.append("Training in CPU...")
-        DEVICE = "/cpu:0"
+        self.DEVICE = "/cpu:0"
 
     def train(self):
         self.epoches = int(self.epochs.toPlainText())
