@@ -57,21 +57,21 @@ class Cell(QMainWindow, Ui_MainWindow):
     ROI_PATH=""
     DETECT_PATH=""
     coco_path = ""
-    def load_profile:
-	with open('profile.json') as f:
-		data = json.load(f)
-	self.epoches = f['epoches']
-	self.confidence = f['confidence']
-	self.DEVICE=f['DEVICE']
-	self.dataset_path = f['dataset_path']
-	self.WORK_DIR = f['WORK_DIR']
-	self.ROI_PATH = f['ROI_PATH']
-	self.DETECT_PATH = f['DETECT_PATH']
-	self. coco_path = f['coco_path']
-    def save_profile:
-    	dict tmp = dict()
-    	tmp['epoches'] = self.epoches
-    	tmp['confidence']=self.confidence
+    def load_profile(self):
+	    with open('profile.json') as f:
+	    	data = json.load(f)
+	    self.epoches = int(f['epoches'])
+	    self.confidence = float(f['confidence'])
+	    self.DEVICE=f['DEVICE']
+	    self.dataset_path = f['dataset_path']
+	    self.WORK_DIR = f['WORK_DIR']
+	    self.ROI_PATH = f['ROI_PATH']
+	    self.DETECT_PATH = f['DETECT_PATH']
+	    self. coco_path = f['coco_path']
+    def save_profile(self):
+    	tmp = dict()
+    	tmp['epoches'] = str(self.epoches)
+    	tmp['confidence']=str(self.confidence)
     	tmp['DEVICE'] = self.DEVICE
     	tmp['dataset_path'] = self.dataset_path
     	tmp['WORK_DIR'] = self.WORK_DIR
