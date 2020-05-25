@@ -15,7 +15,7 @@ class Ui_MainWindow(object):
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         self.train_btn = QtWidgets.QPushButton(self.centralwidget)
-        self.train_btn.setGeometry(QtCore.QRect(30, 240, 151, 51))
+        self.train_btn.setGeometry(QtCore.QRect(50, 200, 151, 51))
         self.train_btn.setObjectName("train_btn")
         self.conf_rate = QtWidgets.QTextEdit(self.centralwidget)
         self.conf_rate.setGeometry(QtCore.QRect(150, 40, 161, 31))
@@ -30,7 +30,7 @@ class Ui_MainWindow(object):
         self.epochs.setGeometry(QtCore.QRect(150, 80, 161, 31))
         self.epochs.setObjectName("epochs")
         self.progressBar = QtWidgets.QProgressBar(self.centralwidget)
-        self.progressBar.setGeometry(QtCore.QRect(30, 180, 871, 41))
+        self.progressBar.setGeometry(QtCore.QRect(50, 140, 871, 41))
         self.progressBar.setProperty("value", 0)
         self.progressBar.setObjectName("progressBar")
         self.upload_sets = QtWidgets.QPushButton(self.centralwidget)
@@ -53,50 +53,50 @@ class Ui_MainWindow(object):
         self.roi_convert.setGeometry(QtCore.QRect(660, 40, 151, 31))
         self.roi_convert.setObjectName("roi_convert")
         self.detect_btn = QtWidgets.QPushButton(self.centralwidget)
-        self.detect_btn.setGeometry(QtCore.QRect(220, 240, 181, 51))
+        self.detect_btn.setGeometry(QtCore.QRect(240, 200, 111, 51))
         self.detect_btn.setObjectName("detect_btn")
         self.textBrowser = QtWidgets.QTextBrowser(self.centralwidget)
-        self.textBrowser.setGeometry(QtCore.QRect(30, 310, 881, 261))
+        self.textBrowser.setGeometry(QtCore.QRect(50, 270, 881, 261))
         self.textBrowser.setObjectName("textBrowser")
         self.mrcnn_btn = QtWidgets.QPushButton(self.centralwidget)
         self.mrcnn_btn.setGeometry(QtCore.QRect(490, 80, 151, 31))
         self.mrcnn_btn.setObjectName("mrcnn_btn")
         self.clear_logs = QtWidgets.QPushButton(self.centralwidget)
-        self.clear_logs.setGeometry(QtCore.QRect(30, 580, 89, 25))
+        self.clear_logs.setGeometry(QtCore.QRect(50, 540, 89, 25))
         self.clear_logs.setObjectName("clear_logs")
         self.export_logs = QtWidgets.QPushButton(self.centralwidget)
-        self.export_logs.setGeometry(QtCore.QRect(130, 580, 89, 25))
+        self.export_logs.setGeometry(QtCore.QRect(150, 540, 89, 25))
         self.export_logs.setObjectName("export_logs")
         self.anot_btn = QtWidgets.QPushButton(self.centralwidget)
-        self.anot_btn.setGeometry(QtCore.QRect(450, 240, 181, 51))
+        self.anot_btn.setGeometry(QtCore.QRect(370, 200, 121, 51))
         self.anot_btn.setObjectName("anot_btn")
         self.mask_btn = QtWidgets.QPushButton(self.centralwidget)
-        self.mask_btn.setGeometry(QtCore.QRect(690, 240, 181, 51))
+        self.mask_btn.setGeometry(QtCore.QRect(500, 200, 111, 51))
         self.mask_btn.setObjectName("mask_btn")
         self.output_dir = QtWidgets.QPushButton(self.centralwidget)
         self.output_dir.setGeometry(QtCore.QRect(660, 80, 151, 31))
         self.output_dir.setObjectName("output_dir")
         self.format_txt = QtWidgets.QTextEdit(self.centralwidget)
-        self.format_txt.setGeometry(QtCore.QRect(400, 580, 161, 31))
+        self.format_txt.setGeometry(QtCore.QRect(420, 540, 161, 31))
         self.format_txt.setObjectName("format_txt")
         self.label_3 = QtWidgets.QLabel(self.centralwidget)
-        self.label_3.setGeometry(QtCore.QRect(270, 580, 121, 31))
+        self.label_3.setGeometry(QtCore.QRect(290, 540, 121, 31))
         self.label_3.setObjectName("label_3")
         self.label_4 = QtWidgets.QLabel(self.centralwidget)
-        self.label_4.setGeometry(QtCore.QRect(600, 580, 121, 31))
+        self.label_4.setGeometry(QtCore.QRect(620, 540, 121, 31))
         self.label_4.setObjectName("label_4")
         self.train_mode = QtWidgets.QTextEdit(self.centralwidget)
-        self.train_mode.setGeometry(QtCore.QRect(710, 580, 161, 31))
+        self.train_mode.setGeometry(QtCore.QRect(730, 540, 161, 31))
         self.train_mode.setObjectName("train_mode")
-        self.label_5 = QtWidgets.QLabel(self.centralwidget)
-        self.label_5.setGeometry(QtCore.QRect(30, 130, 141, 31))
-        self.label_5.setObjectName("label_5")
-        self.steps = QtWidgets.QTextEdit(self.centralwidget)
-        self.steps.setGeometry(QtCore.QRect(180, 130, 161, 31))
-        self.steps.setObjectName("steps")
+        self.l_profile = QtWidgets.QPushButton(self.centralwidget)
+        self.l_profile.setGeometry(QtCore.QRect(630, 200, 89, 25))
+        self.l_profile.setObjectName("l_profile")
+        self.s_profile = QtWidgets.QPushButton(self.centralwidget)
+        self.s_profile.setGeometry(QtCore.QRect(630, 230, 89, 25))
+        self.s_profile.setObjectName("s_profile")
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 937, 22))
+        self.menubar.setGeometry(QtCore.QRect(0, 0, 937, 28))
         self.menubar.setObjectName("menubar")
         self.menuMaskRCNN_Trainer = QtWidgets.QMenu(self.menubar)
         self.menuMaskRCNN_Trainer.setObjectName("menuMaskRCNN_Trainer")
@@ -130,15 +130,15 @@ class Ui_MainWindow(object):
         self.conf_rate.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
-"</style></head><body style=\" font-family:\'Noto Sans\'; font-size:9pt; font-weight:400; font-style:normal;\">\n"
-"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-family:\'Ubuntu\'; font-size:11pt;\">0.9</span></p></body></html>"))
+"</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">0.9</p></body></html>"))
         self.label.setText(_translate("MainWindow", "Confidence Rate: "))
         self.label_2.setText(_translate("MainWindow", "Traning Epochs: "))
         self.epochs.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
-"</style></head><body style=\" font-family:\'Noto Sans\'; font-size:9pt; font-weight:400; font-style:normal;\">\n"
-"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-family:\'Ubuntu\'; font-size:11pt;\">100</span></p></body></html>"))
+"</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">100</p></body></html>"))
         self.upload_sets.setText(_translate("MainWindow", "Upload datasets"))
         self.upload_weight.setText(_translate("MainWindow", "Upload weights"))
         self.upload_det.setText(_translate("MainWindow", "Upload detection images"))
@@ -155,21 +155,17 @@ class Ui_MainWindow(object):
         self.format_txt.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
-"</style></head><body style=\" font-family:\'Noto Sans\'; font-size:9pt; font-weight:400; font-style:normal;\">\n"
-"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-family:\'Ubuntu\'; font-size:11pt;\">.jpg</span></p></body></html>"))
+"</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">.jpg</p></body></html>"))
         self.label_3.setText(_translate("MainWindow", "Detect Format:"))
         self.label_4.setText(_translate("MainWindow", "Training Mode:"))
         self.train_mode.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
-"</style></head><body style=\" font-family:\'Noto Sans\'; font-size:9pt; font-weight:400; font-style:normal;\">\n"
-"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-family:\'Ubuntu\'; font-size:11pt;\">train</span></p></body></html>"))
-        self.label_5.setText(_translate("MainWindow", "Traning Steps per Epoch: "))
-        self.steps.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
-"<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
-"p, li { white-space: pre-wrap; }\n"
-"</style></head><body style=\" font-family:\'Noto Sans\'; font-size:9pt; font-weight:400; font-style:normal;\">\n"
-"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-family:\'Ubuntu\'; font-size:11pt;\">10</span></p></body></html>"))
+"</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
+"<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">train</p></body></html>"))
+        self.l_profile.setText(_translate("MainWindow", "Load Profile"))
+        self.s_profile.setText(_translate("MainWindow", "Save Profile"))
         self.menuMaskRCNN_Trainer.setTitle(_translate("MainWindow", "File"))
         self.menuHelp.setTitle(_translate("MainWindow", "Help"))
         self.actionOpen.setText(_translate("MainWindow", "Open..."))
