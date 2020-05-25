@@ -457,7 +457,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         import mrcnn.visualize
         import mrcnn.model as modellib
         from mrcnn.model import log
-        from samples.cell import cell
+        import cell
         # Directory to save logs and trained model
         MODEL_DIR = os.path.join(ROOT_DIR, "logs")
         # Path to Ballon trained weights
