@@ -81,6 +81,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.weight_path = f['weight_path']
         self.steps_num = f['steps']
         self.steps.setText(str(f['steps']))
+        self.append("Json profile loaded!")
     #Json write
     def save_profile(self):
     	tmp = dict()
@@ -96,6 +97,7 @@ class Cell(QMainWindow, Ui_MainWindow):
     	tmp['steps'] = self.steps.toPlainText()
     	with open('profile.json', 'w') as json_file:
             json.dump(tmp, json_file)
+    	self.append("Json Profile saved!")
     def __init__(self, parent=None):
 
         super(Cell, self).__init__(parent)
@@ -120,7 +122,6 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.s_profile.clicked.connect(self.save_profile)
         ################################################
     def zip2coco(self):
-        
         try:
             epoches = int(self.epochs.toPlainText())
             confidence = float(self.conf_rate.toPlainText())
@@ -232,6 +233,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                                 f.write(json.dumps(original, ensure_ascii=False))
         except:
             self.append("Conversion failed partially!")
+    
     def append(self, a):
         now = datetime.now()
         current_time = now.strftime("[%m-%d-%Y %H:%M:%S]")
@@ -247,6 +249,7 @@ class Cell(QMainWindow, Ui_MainWindow):
     def cpu_train_func(self):
         self.append("Training in CPU...")
         self.DEVICE = "/cpu:0"
+    
     def train_t(self):
         self.epoches = int(self.epochs.toPlainText())
         self.confidence = float(self.conf_rate.toPlainText())
