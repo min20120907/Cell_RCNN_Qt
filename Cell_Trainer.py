@@ -46,6 +46,7 @@ import io
 from os.path import dirname
 import json
 import threading
+import trainingThread
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -448,9 +449,13 @@ class Cell(QMainWindow, Ui_MainWindow):
             # Train or evaluate
             train(model)
     def train_t(self):
-        t = threading.Thread(target = self.train)
-        t.start()
-        t.join()
+        self.myThread = QtCore.QThread()
+        self.thread = trainingThread.trainingThread()
+        self.thread.update_training_status.connect(self.train)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+
     def detect(self):
         #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -828,6 +833,5 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     window = Cell()
-
     window.show()
     sys.exit(app.exec_())
