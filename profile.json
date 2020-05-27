@@ -1,1 +1,1 @@
-{"epoches": 100, "confidence": 0.9, "DEVICE": "/cpu:0", "dataset_path": "", "WORK_DIR": "", "ROI_PATH": "", "DETECT_PATH": "", "coco_path": ""}
+{"epoches": 10, "confidence": 0.9, "DEVICE": "/cpu:0", "dataset_path": "/media/min20120907/Resources/Linux/Mask_RCNN/samples/cell/dataset", "WORK_DIR": "", "ROI_PATH": "", "DETECT_PATH": "", "coco_path": ""}

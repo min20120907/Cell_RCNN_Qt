@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-
+def launch_Selenium_Thread(self):
+        t = threading.Thread(target=self.log)
+        t.start()
 #ImageJ tensorflow Python 3.8 Dependencies
 import subprocess
 import os
@@ -42,6 +44,8 @@ import json
 import read_roi
 import io
 from os.path import dirname
+import json
+import threading
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -53,16 +57,45 @@ class Cell(QMainWindow, Ui_MainWindow):
     ROI_PATH=""
     DETECT_PATH=""
     coco_path = ""
+    def load_profile(self):
+        with open("profile.json") as f:
+            data = json.loads(f.read())
+        f= data
+        self.epoches = f['epoches']
+        self.epochs.setText(str(f['epoches']))
+        self.confidence = f['confidence']
+        self.conf_rate.setText(str(f['confidence']))
+        self.DEVICE = f['DEVICE']
+        if(self.DEVICE=="/cpu:0"):
+            self.cpu_train.toggle()
+        elif(self.DEVICE=="/gpu:0"):
+            self.gpu_train.toggle()
+        self.dataset_path = f['dataset_path']
+        self.WORK_DIR = f['WORK_DIR']
+        self.ROI_PATH = f['ROI_PATH']
+        self.DETECT_PATH = f['DETECT_PATH']
+        self.coco_path = f['coco_path']
+    def save_profile(self):
+    	tmp = dict()
+    	tmp['epoches'] = int(self.epochs.toPlainText())
+    	tmp['confidence']=float(self.conf_rate.toPlainText())
+    	tmp['DEVICE'] = self.DEVICE
+    	tmp['dataset_path'] = self.dataset_path
+    	tmp['WORK_DIR'] = self.WORK_DIR
+    	tmp['ROI_PATH'] = self.ROI_PATH
+    	tmp['DETECT_PATH'] = self.DETECT_PATH
+    	tmp['coco_path'] = self.coco_path
+    	with open('profile.json', 'w') as json_file:
+    		json.dump(tmp, json_file)
     def __init__(self, parent=None):
 
         super(Cell, self).__init__(parent)
 
         self.setupUi(self)
         #TextArea Events
-        self.epoches = int(self.epochs.toPlainText())
-        self.confidence = float(self.conf_rate.toPlainText())
+        
         #Button Events
-        self.train_btn.clicked.connect(self.train)
+        self.train_btn.clicked.connect(self.train_t)
         self.detect_btn.clicked.connect(self.detect)
 
         self.gpu_train.clicked.connect(self.gpu_train_func)
@@ -74,115 +107,122 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.mrcnn_btn.clicked.connect(self.get_mrcnn)
         self.output_dir.clicked.connect(self.save_ROIs)
         self.roi_convert.clicked.connect(self.zip2coco)
-        
+        self.l_profile.clicked.connect(self.load_profile)
+        self.s_profile.clicked.connect(self.save_profile)
         ################################################
     def zip2coco(self):
         
-        os.chdir(self.coco_path)
-        path ="."
-        
-        # ROI arrays
-        filenames = []
-        zips = []
-        dirs =[]
-        # scanning
-        for d in os.walk(path):
-            for dir in d:
-                for r,d,f in os.walk(str(dir)):
-                    for file in f:
-                        if ".jpg" in file:
-                            filenames.append(os.path.join(r, file))
-                        elif ".zip" in file:
-                            zips.append(os.path.join(r, file))
-                # Sorting
-                zips.sort()
-                filenames.sort()
-                # looping and decoding...
-                print(zips)
-                for j in range(len(zips)):
-                    for i in range(len(filenames)):
-                        # declare ROI file
-                        roi = read_roi.read_roi_zip(zips[j])
-                        roi_list = list(roi.values())
+        try:
+            epoches = int(self.epochs.toPlainText())
+            confidence = float(self.conf_rate.toPlainText())
+            self.append(str(self.epoches))
+            self.append(str(self.confidence))
+            self.get_coco()
+            os.chdir(self.coco_path)
+            path ="."
+            
+            # ROI arrays
+            filenames = []
+            zips = []
+            dirs =[]
+            # scanning
+            for d in os.walk(path):
+                for dir in d:
+                    for r,d,f in os.walk(str(dir)):
+                        for file in f:
+                            if self.format_txt.toPlainText() in file:
+                                filenames.append(os.path.join(r, file))
+                            elif ".zip" in file:
+                                zips.append(os.path.join(r, file))
+                    # Sorting
+                    zips.sort()
+                    filenames.sort()
+                    # looping and decoding...
+                    print(zips)
+                    for j in range(len(zips)):
+                        for i in range(len(filenames)):
+                            # declare ROI file
+                            roi = read_roi.read_roi_zip(zips[j])
+                            roi_list = list(roi.values())
 
-                        # ROI related file informations
+                            # ROI related file informations
 
-                        filename = filenames[i].replace("./", "")
-                        im = cv2.imread("./"+filename)
-                        h, w, c = im.shape
-                        size = os.path.getsize(filename)
-                        try:
-                            f = open("via_region_data.json")
-                            original = json.loads(f.read())
-                            print("Writing..."+str(zips[j]))
-                            # Do something with the file
-                        except FileNotFoundError:
-                            print("File not exisited, creating new file...")
-                            original = {}
+                            filename = filenames[i].replace("./", "")
+                            im = cv2.imread("./"+filename)
+                            h, w, c = im.shape
+                            size = os.path.getsize(filename)
+                            try:
+                                f = open("via_region_data.json")
+                                original = json.loads(f.read())
+                                print("Writing..."+str(zips[j]))
+                                # Do something with the file
+                            except FileNotFoundError:
+                                print("File not exisited, creating new file...")
+                                original = {}
 
-                        data = {
-                            filename
-                            + str(size): {
-                                "fileref": "",
-                                "size": size,
-                                "filename": filename,
-                                "base64_img_data": "",
-                                "file_attributes": {},
-                                "regions": {},
-                            }
-                        }
-
-                        # write json
-
-                        length = len(list(roi.values()))
-                        self.progressBar.setMaximum(length)
-                        for a in range(length):
-                            filename2 = filename.replace(".jpg", "").replace("-", " ").split(" ")
-                            roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
-                            filenum = ""
-                            if ".tif" in filename2[5]:
-                                index = 4
-                            else:
-                                index = 5
-                            if int(filename2[index]) > 10 and int(filename2[index]) < 100:
-                                filenum = "00" + str(filename2[index])
-                            elif int(filename2[index]) > 100 and int(filename2[index]) < 1000:
-                                filenum = "0" + str(filename2[index])
-                            elif int(filename2[index]) > 1 and int(filename2[index]) < 10:
-                                filenum = "000" + str(filename2[index])
-                            elif int(filename2[index]) > 1000 and int(filename2[index]) < 10000:
-                                filenum = str(filename2[index])
-
-                            if filenum == roi_name[0]:
-                                print("roi_name: ", roi_name[0], "filename: ", filenum)
-                                x_list = roi_list[a]["x"]
-                                y_list = roi_list[a]["y"]
-                                for l in range(len(x_list)):
-                                    if x_list[l] >= w:
-                                        x_list[l] = w
-                                    #  print(x_list[j])
-                                for k in range(len(y_list)):
-                                    if y_list[k] >=h:
-                                        y_list[k] = h
-                                #                print(y_list[k])
-                                # parameters
-
-                                x_list.append(roi_list[a]["x"][0])
-                                y_list.append(roi_list[a]["y"][0])
-                                regions = {
-                                    str(a): {
-                                        "shape_attributes": {
-                                            "name": "polygon",
-                                            "all_points_x": x_list,
-                                            "all_points_y": y_list,
-                                        },
-                                        "region_attributes": {"name": dirname(dir).replace("-ROI", " ")+"-"+str(j)},
-                                    }
+                            data = {
+                                filename
+                                + str(size): {
+                                    "fileref": "",
+                                    "size": size,
+                                    "filename": filename,
+                                    "base64_img_data": "",
+                                    "file_attributes": {},
+                                    "regions": {},
                                 }
-                                data[filename + str(size)]["regions"].update(regions)
-                                original.update(data)
-                        with io.open("via_region_data.json", "w", encoding="utf-8") as f:
-                            f.write(json.dumps(original, ensure_ascii=False))
+                            }
+
+                            # write json
+
+                            length = len(list(roi.values()))
+                            self.progressBar.setMaximum(length)
+                            for a in range(length):
+                                self.progressBar.setValue(a+1)
+                                filename2 = filename.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")
+                                roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
+                                filenum = ""
+
+                                if int(filename2[-1]) > 10 and int(filename2[-1]) < 100:
+                                    filenum = "00" + str(filename2[-1])
+                                elif int(filename2[-1]) > 100 and int(filename2[-1]) < 1000:
+                                    filenum = "0" + str(filename2[-1])
+                                elif int(filename2[-1]) > 1 and int(filename2[-1]) < 10:
+                                    filenum = "000" + str(filename2[-1])
+                                elif int(filename2[-1]) > 1000 and int(filename2[-1]) < 10000:
+                                    filenum = str(filename2[-1])
+
+                                if filenum == roi_name[0]:
+                                    print("roi_name: ", roi_name[0], "filename: ", filenum)
+                                    x_list = roi_list[a]["x"]
+                                    y_list = roi_list[a]["y"]
+                                    for l in range(len(x_list)):
+                                        if x_list[l] >= w:
+                                            x_list[l] = w
+                                        #  print(x_list[j])
+                                    for k in range(len(y_list)):
+                                        if y_list[k] >=h:
+                                            y_list[k] = h
+                                    #                print(y_list[k])
+                                    # parameters
+
+                                    x_list.append(roi_list[a]["x"][0])
+                                    y_list.append(roi_list[a]["y"][0])
+                                    regions = {
+                                        str(a): {
+                                            "shape_attributes": {
+                                                "name": "polygon",
+                                                "all_points_x": x_list,
+                                                "all_points_y": y_list,
+                                            },
+                                            "region_attributes": {"name": dirname(dir).replace("-ROI", " ")+"-"+str(j)},
+                                        }
+                                    }
+                                    data[filename + str(size)]["regions"].update(regions)
+                                    original.update(data)
+                            with io.open("via_region_data.json", "w", encoding="utf-8") as f:
+                                f.write(json.dumps(original, ensure_ascii=False))
+        except:
+            self.append("Conversion failed partially!")
     def append(self, a):
         now = datetime.now()
         current_time = now.strftime("[%m-%d-%Y %H:%M:%S]")
@@ -193,14 +233,15 @@ class Cell(QMainWindow, Ui_MainWindow):
 
     def gpu_train_func(self):
         self.append("Training in GPU...")
-        DEVICE = "/gpu:0"
+        self.DEVICE = "/gpu:0"
 
     def cpu_train_func(self):
         self.append("Training in CPU...")
-        DEVICE = "/cpu:0"
-
+        self.DEVICE = "/cpu:0"
+    @pyqtSlot()
     def train(self):
-
+        self.epoches = int(self.epochs.toPlainText())
+        self.confidence = float(self.conf_rate.toPlainText())
         # Root directory of the project
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
         # Import Mask RCNN
@@ -358,7 +399,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             self.append("Training network heads")
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
-                        epochs=self.epoches,
+                        epochs=int(self.steps.toPlainText()),
                         layers='heads')
 
         ############################################################
@@ -367,8 +408,6 @@ class Cell(QMainWindow, Ui_MainWindow):
 
         if __name__ == '__main__':
             # Validate arguments
-            if self.train_mode.toPlainText() == "train":
-                assert self.dataset_path, "Argument --dataset is required for training"
 
             self.append("Dataset: "+self.dataset_path)
             self.append("Logs: "+self.WORK_DIR+"/logs")
@@ -394,7 +433,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                                           model_dir=self.WORK_DIR+"/logs")
 
             weights_path = COCO_WEIGHTS_PATH
-            # Download weights file
+            # Download weights filet
             if not os.path.exists(weights_path):
                 utils.download_trained_weights(weights_path)
 
@@ -408,9 +447,14 @@ class Cell(QMainWindow, Ui_MainWindow):
                 "mrcnn_bbox", "mrcnn_mask"])
             # Train or evaluate
             train(model)
+    def train_t(self):
+        t = threading.Thread(target = self.train)
+        t.start()
+        t.join()
     def detect(self):
+        #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        print(ROOT_DIR)
+        #print(ROOT_DIR)
         # Import Mask RCNN
         sys.path.append(ROOT_DIR)  # To find local version of the library
         # import training functions
@@ -420,7 +464,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         import mrcnn.visualize
         import mrcnn.model as modellib
         from mrcnn.model import log
-        from samples.cell import cell
+        import cell
         # Directory to save logs and trained model
         MODEL_DIR = os.path.join(ROOT_DIR, "logs")
         # Path to Ballon trained weights
@@ -479,12 +523,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -592,12 +636,12 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -608,7 +652,7 @@ class Cell(QMainWindow, Ui_MainWindow):
             results = model.detect([image], verbose=0)
 
             r = results[0]
-            mrcnn.visualize.save_image(image, str(j)+"-anot.jpg",r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
+            mrcnn.visualize.save_image(image, str(j)+"-anot"+self.format_txt.toPlainText(),r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
     
     def detect_BW(self):
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -681,12 +725,11 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*.jpg"):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
             filenames.append(f)
-
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(".jpg", "").replace("-", " ").split(" ")[6]))
+        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append(str(np.array(filenames)))
@@ -695,16 +738,14 @@ class Cell(QMainWindow, Ui_MainWindow):
             image = skimage.io.imread(os.path.join(filenames[j]))
             # Run object detection
             results = model.detect([image], verbose=0)
-
             r = results[0]
-
             data = numpy.array(r['masks'], dtype=numpy.bool)
             # self.append(data.shape)
             edges = []
             for a in range(len(r['masks'][0][0])):
                 mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
                 img = Image.fromarray(mask, 'L')
-                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(".jpg","")+str(a)+".jpg")
+                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(self.format_txt.toPlainText(),"")+str(a)+self.format_txt.toPlainText())
 ###############################################
     def get_sets(self):
         dir_choose = QFileDialog.getExistingDirectory(
@@ -787,5 +828,6 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     window = Cell()
+
     window.show()
     sys.exit(app.exec_())
