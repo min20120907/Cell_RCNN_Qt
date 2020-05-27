@@ -47,6 +47,10 @@ from os.path import dirname
 import json
 import threading
 import trainingThread
+import detectingThread
+import cocoThread
+import BWThread
+import anotThread
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -122,118 +126,17 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.s_profile.clicked.connect(self.save_profile)
         ################################################
     def zip2coco(self):
-        try:
-            epoches = int(self.epochs.toPlainText())
-            confidence = float(self.conf_rate.toPlainText())
-            self.append(str(self.epoches))
-            self.append(str(self.confidence))
-            self.get_coco()
-            os.chdir(self.coco_path)
-            path ="."
-            
-            # ROI arrays
-            filenames = []
-            zips = []
-            dirs =[]
-            # scanning
-            for d in os.walk(path):
-                for dir in d:
-                    for r,d,f in os.walk(str(dir)):
-                        for file in f:
-                            if self.format_txt.toPlainText() in file:
-                                filenames.append(os.path.join(r, file))
-                            elif ".zip" in file:
-                                zips.append(os.path.join(r, file))
-                    # Sorting
-                    zips.sort()
-                    filenames.sort()
-                    # looping and decoding...
-                    print(zips)
-                    for j in range(len(zips)):
-                        for i in range(len(filenames)):
-                            # declare ROI file
-                            roi = read_roi.read_roi_zip(zips[j])
-                            roi_list = list(roi.values())
-
-                            # ROI related file informations
-
-                            filename = filenames[i].replace("./", "")
-                            im = cv2.imread("./"+filename)
-                            h, w, c = im.shape
-                            size = os.path.getsize(filename)
-                            try:
-                                f = open("via_region_data.json")
-                                original = json.loads(f.read())
-                                print("Writing..."+str(zips[j]))
-                                # Do something with the file
-                            except FileNotFoundError:
-                                print("File not exisited, creating new file...")
-                                original = {}
-
-                            data = {
-                                filename
-                                + str(size): {
-                                    "fileref": "",
-                                    "size": size,
-                                    "filename": filename,
-                                    "base64_img_data": "",
-                                    "file_attributes": {},
-                                    "regions": {},
-                                }
-                            }
-
-                            # write json
-
-                            length = len(list(roi.values()))
-                            self.progressBar.setMaximum(length)
-                            for a in range(length):
-                                self.progressBar.setValue(a+1)
-                                filename2 = filename.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")
-                                roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
-                                filenum = ""
-
-                                if int(filename2[-1]) > 10 and int(filename2[-1]) < 100:
-                                    filenum = "00" + str(filename2[-1])
-                                elif int(filename2[-1]) > 100 and int(filename2[-1]) < 1000:
-                                    filenum = "0" + str(filename2[-1])
-                                elif int(filename2[-1]) > 1 and int(filename2[-1]) < 10:
-                                    filenum = "000" + str(filename2[-1])
-                                elif int(filename2[-1]) > 1000 and int(filename2[-1]) < 10000:
-                                    filenum = str(filename2[-1])
-
-                                if filenum == roi_name[0]:
-                                    print("roi_name: ", roi_name[0], "filename: ", filenum)
-                                    x_list = roi_list[a]["x"]
-                                    y_list = roi_list[a]["y"]
-                                    for l in range(len(x_list)):
-                                        if x_list[l] >= w:
-                                            x_list[l] = w
-                                        #  print(x_list[j])
-                                    for k in range(len(y_list)):
-                                        if y_list[k] >=h:
-                                            y_list[k] = h
-                                    #                print(y_list[k])
-                                    # parameters
-
-                                    x_list.append(roi_list[a]["x"][0])
-                                    y_list.append(roi_list[a]["y"][0])
-                                    regions = {
-                                        str(a): {
-                                            "shape_attributes": {
-                                                "name": "polygon",
-                                                "all_points_x": x_list,
-                                                "all_points_y": y_list,
-                                            },
-                                            "region_attributes": {"name": dirname(dir).replace("-ROI", " ")+"-"+str(j)},
-                                        }
-                                    }
-                                    data[filename + str(size)]["regions"].update(regions)
-                                    original.update(data)
-                            with io.open("via_region_data.json", "w", encoding="utf-8") as f:
-                                f.write(json.dumps(original, ensure_ascii=False))
-        except:
-            self.append("Conversion failed partially!")
-    
+        self.get_coco()
+        self.myThread = QtCore.QThread()
+        self.thread = cocoThread.cocoThread(coco_path=self.coco_path, txt= self.format_txt.toPlainText())
+        self.thread.append_coco.connect(self.append)
+        self.thread.progressBar.connect(self.progressBar.setValue)
+        self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
     def append(self, a):
         now = datetime.now()
         current_time = now.strftime("[%m-%d-%Y %H:%M:%S]")
@@ -261,300 +164,28 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.myThread.start()
 
     def detect(self):
-        #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
-        ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        #print(ROOT_DIR)
-        # Import Mask RCNN
-        sys.path.append(ROOT_DIR)  # To find local version of the library
-        # import training functions
+        self.myThread = QtCore.QThread()
+        self.thread = detectingThread.detectingThread()
+        self.thread.append.connect(self.append)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
         
-        import mrcnn.utils
-        import mrcnn.visualize
-        import mrcnn.visualize
-        import mrcnn.model as modellib
-        from mrcnn.model import log
-        import cell
-        # Directory to save logs and trained model
-        MODEL_DIR = os.path.join(ROOT_DIR, "logs")
-        # Path to Ballon trained weights
-        # You can download this file from the Releases page
-        # https://github.com/matterport/Mask_RCNN/releases
-        CELL_WEIGHTS_PATH = self.weight_path  # TODO: update this path
-        
-        DEVICE =self.DEVICE
-        config = cell.CustomConfig()
-
-        # Override the training configurations with a few
-        # changes for inferencing.
-        def parseInt(a):
-            filenum=""
-            if int(a) >= 100 and int(a) < 1000:
-                filenum = "0" + str(a)
-            elif int(a) >= 10 and int(a) < 100:
-                filenum = "00" + str(a)
-            elif int(a) >= 1 and int(a) < 10:
-                filenum = "000" + str(a)
-            elif int(a) >= 1000 and int(a) < 10000:
-                 filenum = str(a)
-            else:
-                filenum="0000"
-            return filenum
-        class InferenceConfig(config.__class__):
-            # Run detection on one image at a time
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
-
-
-        config = InferenceConfig()
-        config.display()
-
-        # Device to load the neural network on.
-        # Useful if you're training a model on the same
-        # machine, in which case use CPU and leave the
-        # GPU for training.
-
-        # Inspect the model in training or inference modes
-        # values: 'inference' or 'training'
-        # TODO: code for 'training' test mode not ready yet
-        TEST_MODE = "inference"
-
-        # Create model in inference mode
-        with tf.device(DEVICE):
-            model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR,
-                                      config=config)
-
-        # Or, load the last model you trained
-        weights_path = self.weight_path
-
-        # Load weights
-        print("Loading weights "+str(weights_path))
-        model.load_weights(weights_path, by_name=True)
-        print("loaded weights!")
-        filenames = []
-
-        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
-            filenames.append(f)
-
-        #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
-        filenames.sort()
-        file_sum=0
-        print(str(np.array(filenames)))
-        for j in range(len(filenames)):
-            self.progressBar.setValue(j)
-            image = skimage.io.imread(os.path.join(filenames[j]))
-            # Run object detection
-            results = model.detect([image], verbose=0)
-
-            r = results[0]
-
-            data = numpy.array(r['masks'], dtype=numpy.bool)
-            # print(data.shape)
-            edges = []
-            for a in range(len(r['masks'][0][0])):
-
-                # print(data.shape)
-                # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
-                mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
-                img = Image.fromarray(mask, 'L')
-                g = cv2.Canny(np.array(img),10,100)
-                contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
-                self.progressBar.setValue(j)
-                for contour in contours:
-                    file_sum+=1
-
-                    x = [i[0][0] for i in contour]
-                    y = [i[0][1] for i in contour]
-                    if(len(x)>=100):
-                        roi_obj = ROIPolygon(x, y)
-                        with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
-                            roi.write()
-                        with ZipFile(self.ROI_PATH, 'a') as myzip:
-                            myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                            print("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                        os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
     def detect_anot(self):
-        ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        print(ROOT_DIR)
-        # Import Mask RCNN
-        sys.path.append(ROOT_DIR)  # To find local version of the library
-        # import training functions
+        self.myThread = QtCore.QThread()
+        self.thread = anotThread.anotThread()
+        self.thread.append.connect(self.append)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
         
-        import mrcnn.utils
-        import mrcnn.visualize
-        import mrcnn.visualize
-        import mrcnn.model as modellib
-        from mrcnn.model import log
-        from samples.cell import cell
-        # Directory to save logs and trained model
-        MODEL_DIR = os.path.join(ROOT_DIR, "logs")
-        # Path to Ballon trained weights
-        # You can download this file from the Releases page
-        # https://github.com/matterport/Mask_RCNN/releases
-        CELL_WEIGHTS_PATH = self.weight_path  # TODO: update this path
-        
-        DEVICE =self.DEVICE
-        config = cell.CustomConfig()
-
-        # Override the training configurations with a few
-        # changes for inferencing.
-        def parseInt(a):
-            filenum=""
-            if int(a) >= 100 and int(a) < 1000:
-                filenum = "0" + str(a)
-            elif int(a) >= 10 and int(a) < 100:
-                filenum = "00" + str(a)
-            elif int(a) >= 1 and int(a) < 10:
-                filenum = "000" + str(a)
-            elif int(a) >= 1000 and int(a) < 10000:
-                 filenum = str(a)
-            else:
-                filenum="0000"
-            return filenum
-        class InferenceConfig(config.__class__):
-            # Run detection on one image at a time
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
-
-
-        config = InferenceConfig()
-        config.display()
-
-        # Device to load the neural network on.
-        # Useful if you're training a model on the same
-        # machine, in which case use CPU and leave the
-        # GPU for training.
-
-        # Inspect the model in training or inference modes
-        # values: 'inference' or 'training'
-        # TODO: code for 'training' test mode not ready yet
-        TEST_MODE = "inference"
-
-        # Create model in inference mode
-        with tf.device(DEVICE):
-            model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR,
-                                      config=config)
-
-        # Or, load the last model you trained
-        weights_path = self.weight_path
-
-        # Load weights
-        self.append("Loading weights "+str(weights_path))
-        model.load_weights(weights_path, by_name=True)
-        self.append("loaded weights!")
-        filenames = []
-
-        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
-            filenames.append(f)
-
-        #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
-        filenames.sort()
-        file_sum=0
-        self.append(str(np.array(filenames)))
-        for j in range(len(filenames)):
-            self.progressBar.setValue(j)
-            image = skimage.io.imread(os.path.join(filenames[j]))
-            # Run object detection
-            results = model.detect([image], verbose=0)
-
-            r = results[0]
-            mrcnn.visualize.save_image(image, str(j)+"-anot"+self.format_txt.toPlainText(),r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
-    
     def detect_BW(self):
-        ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        print(ROOT_DIR)
-        # Import Mask RCNN
-        sys.path.append(ROOT_DIR)  # To find local version of the library
-        # import training functions
-        
-        import mrcnn.utils
-        import mrcnn.visualize
-        import mrcnn.visualize
-        import mrcnn.model as modellib
-        from mrcnn.model import log
-        from samples.cell import cell
-        # Directory to save logs and trained model
-        MODEL_DIR = os.path.join(ROOT_DIR, "logs")
-        # Path to Ballon trained weights
-        # You can download this file from the Releases page
-        # https://github.com/matterport/Mask_RCNN/releases
-        CELL_WEIGHTS_PATH = self.weight_path  # TODO: update this path
-        
-        DEVICE =self.DEVICE
-        config = cell.CustomConfig()
-
-        # Override the training configurations with a few
-        # changes for inferencing.
-        def parseInt(a):
-            filenum=""
-            if int(a) >= 100 and int(a) < 1000:
-                filenum = "0" + str(a)
-            elif int(a) >= 10 and int(a) < 100:
-                filenum = "00" + str(a)
-            elif int(a) >= 1 and int(a) < 10:
-                filenum = "000" + str(a)
-            elif int(a) >= 1000 and int(a) < 10000:
-                 filenum = str(a)
-            else:
-                filenum="0000"
-            return filenum
-        class InferenceConfig(config.__class__):
-            # Run detection on one image at a time
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
-
-
-        config = InferenceConfig()
-        config.display()
-
-        # Device to load the neural network on.
-        # Useful if you're training a model on the same
-        # machine, in which case use CPU and leave the
-        # GPU for training.
-
-        # Inspect the model in training or inference modes
-        # values: 'inference' or 'training'
-        # TODO: code for 'training' test mode not ready yet
-        TEST_MODE = "inference"
-
-        # Create model in inference mode
-        with tf.device(DEVICE):
-            model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR,
-                                      config=config)
-
-        # Or, load the last model you trained
-        weights_path = self.weight_path
-
-        # Load weights
-        self.append("Loading weights "+str(weights_path))
-        model.load_weights(weights_path, by_name=True)
-        self.append("loaded weights!")
-        filenames = []
-
-        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
-            filenames.append(f)
-        #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressBar.setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
-        filenames.sort()
-        file_sum=0
-        self.append(str(np.array(filenames)))
-        for j in range(len(filenames)):
-            self.progressBar.setValue(j)
-            image = skimage.io.imread(os.path.join(filenames[j]))
-            # Run object detection
-            results = model.detect([image], verbose=0)
-            r = results[0]
-            data = numpy.array(r['masks'], dtype=numpy.bool)
-            # self.append(data.shape)
-            edges = []
-            for a in range(len(r['masks'][0][0])):
-                mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
-                img = Image.fromarray(mask, 'L')
-                img.save("1202-2017-BW/"+os.path.basename(filenames[j]).replace(self.format_txt.toPlainText(),"")+str(a)+self.format_txt.toPlainText())
+        self.myThread = QtCore.QThread()
+        self.thread = BWThread.BWThread()
+        self.thread.append.connect(self.append)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
 ###############################################
     def get_sets(self):
         dir_choose = QFileDialog.getExistingDirectory(

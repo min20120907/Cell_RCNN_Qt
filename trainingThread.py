@@ -41,7 +41,7 @@ import io
 from os.path import dirname
 import json
 import threading
-import trainingThread
+
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):

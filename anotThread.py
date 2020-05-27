@@ -42,9 +42,9 @@ from os.path import dirname
 import json
 import threading
 
-class detectingThread(QtCore.QThread):
+class anotThread(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '', weight_path = '',dataset_path='',ROI_PATH=''):
-        super(detectingThread, self).__init__(parent)
+        super(anotThread, self).__init__(parent)
         self.WORK_DIR = WORK_DIR
         self.weight_path = weight_path
         self.dataset_path = dataset_path
@@ -52,19 +52,17 @@ class detectingThread(QtCore.QThread):
     append = QtCore.pyqtSignal(str)
     progressbar = QtCore.pyqtSignal(int)
     def run(self):
-        #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        #print(ROOT_DIR)
+        print(ROOT_DIR)
         # Import Mask RCNN
         sys.path.append(ROOT_DIR)  # To find local version of the library
         # import training functions
         
         import mrcnn.utils
         import mrcnn.visualize
-        import mrcnn.visualize
         import mrcnn.model as modellib
         from mrcnn.model import log
-        import cell
+        from samples.cell import cell
         # Directory to save logs and trained model
         MODEL_DIR = os.path.join(ROOT_DIR, "logs")
         # Path to Ballon trained weights
@@ -118,9 +116,9 @@ class detectingThread(QtCore.QThread):
         weights_path = self.weight_path
 
         # Load weights
-        print("Loading weights "+str(weights_path))
+        self.append.emit("Loading weights "+str(weights_path))
         model.load_weights(weights_path, by_name=True)
-        print("loaded weights!")
+        self.append.emit("loaded weights!")
         filenames = []
 
         for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
@@ -131,7 +129,7 @@ class detectingThread(QtCore.QThread):
         #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
-        print(str(np.array(filenames)))
+        self.append.emit(str(np.array(filenames)))
         for j in range(len(filenames)):
             self.progressBar.setValue(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
@@ -139,29 +137,4 @@ class detectingThread(QtCore.QThread):
             results = model.detect([image], verbose=0)
 
             r = results[0]
-
-            data = numpy.array(r['masks'], dtype=numpy.bool)
-            # print(data.shape)
-            edges = []
-            for a in range(len(r['masks'][0][0])):
-
-                # print(data.shape)
-                # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
-                mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
-                img = Image.fromarray(mask, 'L')
-                g = cv2.Canny(np.array(img),10,100)
-                contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
-                self.progressBar.setValue(j)
-                for contour in contours:
-                    file_sum+=1
-
-                    x = [i[0][0] for i in contour]
-                    y = [i[0][1] for i in contour]
-                    if(len(x)>=100):
-                        roi_obj = ROIPolygon(x, y)
-                        with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
-                            roi.write()
-                        with ZipFile(self.ROI_PATH, 'a') as myzip:
-                            myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                            print("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                        os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+            mrcnn.visualize.save_image(image, str(j)+"-anot"+self.format_txt.toPlainText(),r['rois'], r['masks'], r['class_ids'], r['scores'],r['class_names'], save_dir="anotated",mode=0)
