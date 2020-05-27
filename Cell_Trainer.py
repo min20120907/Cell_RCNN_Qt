@@ -46,6 +46,7 @@ import io
 from os.path import dirname
 import json
 import threading
+import trainingThread
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -57,6 +58,8 @@ class Cell(QMainWindow, Ui_MainWindow):
     ROI_PATH=""
     DETECT_PATH=""
     coco_path = ""
+    steps_num = 1
+    #Json read
     def load_profile(self):
         with open("profile.json") as f:
             data = json.loads(f.read())
@@ -75,6 +78,10 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.ROI_PATH = f['ROI_PATH']
         self.DETECT_PATH = f['DETECT_PATH']
         self.coco_path = f['coco_path']
+        self.weight_path = f['weight_path']
+        self.steps_num = f['steps']
+        self.steps.setText(str(f['steps']))
+    #Json write
     def save_profile(self):
     	tmp = dict()
     	tmp['epoches'] = int(self.epochs.toPlainText())
@@ -85,8 +92,10 @@ class Cell(QMainWindow, Ui_MainWindow):
     	tmp['ROI_PATH'] = self.ROI_PATH
     	tmp['DETECT_PATH'] = self.DETECT_PATH
     	tmp['coco_path'] = self.coco_path
+    	tmp['weight_path'] = self.weight_path
+    	tmp['steps'] = self.steps.toPlainText()
     	with open('profile.json', 'w') as json_file:
-    		json.dump(tmp, json_file)
+            json.dump(tmp, json_file)
     def __init__(self, parent=None):
 
         super(Cell, self).__init__(parent)
@@ -230,7 +239,7 @@ class Cell(QMainWindow, Ui_MainWindow):
 
     def clear(self):
         self.textBrowser.clear()
-
+        
     def gpu_train_func(self):
         self.append("Training in GPU...")
         self.DEVICE = "/gpu:0"
@@ -238,219 +247,16 @@ class Cell(QMainWindow, Ui_MainWindow):
     def cpu_train_func(self):
         self.append("Training in CPU...")
         self.DEVICE = "/cpu:0"
-    @pyqtSlot()
-    def train(self):
+    def train_t(self):
         self.epoches = int(self.epochs.toPlainText())
         self.confidence = float(self.conf_rate.toPlainText())
-        # Root directory of the project
-        ROOT_DIR = os.path.abspath(self.WORK_DIR)
-        # Import Mask RCNN
-        sys.path.append(ROOT_DIR)  # To find local version of the library
-        from mrcnn.config import Config
-        from mrcnn import model as modellib, utils
+        self.myThread = QtCore.QThread()
+        self.thread = trainingThread.trainingThread(test=1,steps=self.steps_num, train_mode=self.train_mode.toPlainText(), dataset_path=self.dataset_path,confidence=self.confidence,epoches=self.epoches, WORK_DIR=self.WORK_DIR, weight_path=self.weight_path)
+        self.thread.update_training_status.connect(self.append)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
 
-        # Path to trained weights file
-        COCO_WEIGHTS_PATH = os.path.join(self.weight_path)
-
-        # Directory to save logs and model checkpoints, if not provided
-        # through the command line argument --logs
-        DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
-
-        ############################################################
-        #  Configurations
-        ############################################################
-
-
-        class CustomConfig(Config):
-            """Configuration for training on the toy  dataset.
-            Derives from the base Config class and overrides some values.
-            """
-            # Give the configuration a recognizable name
-            NAME = "cell"
-
-            # We use a GPU with 12GB memory, which can fit two images.
-            # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 1
-
-            # Number of classes (including background)
-            NUM_CLASSES = 1 + 1 # Background + toy
-
-            # Number of training steps per epoch
-            STEPS_PER_EPOCH = self.epoches
-
-            # Skip detections with < 90% confidence
-            DETECTION_MIN_CONFIDENCE = self.confidence
-
-
-        ############################################################
-        #  Dataset
-        ############################################################
-
-        class CustomDataset(utils.Dataset):
-        
-            def load_custom(self, dataset_dir, subset):
-                """Load a subset of the bottle dataset.
-                dataset_dir: Root directory of the dataset.
-                subset: Subset to load: train or val
-                """
-                # Add classes. We have only one class to add.
-                self.add_class("cell", 1, "cell")
-
-                # Train or validation dataset?
-                assert subset in ["train", "val"]
-                dataset_dir = os.path.join(dataset_dir, subset)
-
-                # Load annotations
-                # VGG Image Annotator saves each image in the form:
-                # { 'filename': '28503151_5b5b7ec140_b.jpg',
-                #   'regions': {
-                #       '0': {
-                #           'region_attributes': {},
-                #           'shape_attributes': {
-                #               'all_points_x': [...],
-                #               'all_points_y': [...],
-                #               'name': 'polygon'}},
-                #       ... more regions ...
-                #   },
-                #   'size': 100202
-                # }
-                # We mostly care about the x and y coordinates of each region
-                annotations1 = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
-                # print(annotations1)
-                annotations = list(annotations1.values())  # don't need the dict keys
-
-                # The VIA tool saves images in the JSON even if they don't have any
-                # annotations. Skip unannotated images.
-                annotations = [a for a in annotations if a['regions']]
-
-                # Add images
-                for a in annotations:
-                    # print(a)
-                    # Get the x, y coordinaets of points of the polygons that make up
-                    # the outline of each object instance. There are stores in the
-                    # shape_attributes (see json format above)
-                    polygons = [r['shape_attributes'] for r in a['regions'].values()]
-
-                    # load_mask() needs the image size to convert polygons to masks.
-                    # Unfortunately, VIA doesn't include it in JSON, so we must read
-                    # the image. This is only managable since the dataset is tiny.
-                    image_path = os.path.join(dataset_dir, a['filename'])
-                    image = skimage.io.imread(image_path)
-                    height, width = image.shape[:2]
-
-                    self.add_image(
-                        "cell",  ## for a single class just add the name here
-                        image_id=a['filename'],  # use file name as a unique image id
-                        path=image_path,
-                        width=width, height=height,
-                        polygons=polygons)
-
-            def load_mask(self, image_id):
-                """Generate instance masks for an image.
-               Returns:
-                masks: A bool array of shape [height, width, instance count] with
-                    one mask per instance.
-                class_ids: a 1D array of class IDs of the instance masks.
-                """
-                # If not a bottle dataset image, delegate to parent class.
-                image_info = self.image_info[image_id]
-                if image_info["source"] != "cell":
-                    return super(self.__class__, self).load_mask(image_id)
-
-                # Convert polygons to a bitmap mask of shape
-                # [height, width, instance_count]
-                info = self.image_info[image_id]
-                mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                                dtype=np.uint8)
-                for i, p in enumerate(info["polygons"]):
-                    # Get indexes of pixels inside the polygon and set them to 1
-                    rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-                    mask[rr, cc, i] = 1
-
-                # Return mask, and array of class IDs of each instance. Since we have
-                # one class ID only, we return an array of 1s
-                return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
-
-            def image_reference(self, image_id):
-                """Return the path of the image."""
-                info = self.image_info[image_id]
-                if info["source"] == "cell":
-                    return info["path"]
-                else:
-                    super(self.__class__, self).image_reference(image_id)
-
-
-        def train(model):
-            """Train the model."""
-            # Training dataset.
-            dataset_train = CustomDataset()
-            dataset_train.load_custom(self.dataset_path,"train")
-            dataset_train.prepare()
-
-            # Validation dataset
-            dataset_val = CustomDataset()
-            dataset_val.load_custom(self.dataset_path, "val")
-            dataset_val.prepare()
-
-            # *** This training schedule is an example. Update to your needs ***
-            # Since we're using a very small dataset, and starting from
-            # COCO trained weights, we don't need to train too long. Also,
-            # no need to train all layers, just the heads should do it.
-            self.append("Training network heads")
-            model.train(dataset_train, dataset_val,
-                        learning_rate=config.LEARNING_RATE,
-                        epochs=int(self.steps.toPlainText()),
-                        layers='heads')
-
-        ############################################################
-        #  Training
-        ############################################################
-
-        if __name__ == '__main__':
-            # Validate arguments
-
-            self.append("Dataset: "+self.dataset_path)
-            self.append("Logs: "+self.WORK_DIR+"/logs")
-
-            # Configurations
-            if self.train_mode.toPlainText() == "train":
-                config = CustomConfig()
-            else:
-                class InferenceConfig(CustomConfig):
-                    # Set batch size to 1 since we'll be running inference on
-                    # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
-                    GPU_COUNT = 1
-                    IMAGES_PER_GPU = 1
-                config = InferenceConfig()
-            config.display()
-
-            # Create model
-            if self.train_mode.toPlainText() == "train":
-                model = modellib.MaskRCNN(mode="training", config=config,
-                                          model_dir=self.WORK_DIR+"/logs")
-            else:
-                model = modellib.MaskRCNN(mode="inference", config=config,
-                                          model_dir=self.WORK_DIR+"/logs")
-
-            weights_path = COCO_WEIGHTS_PATH
-            # Download weights filet
-            if not os.path.exists(weights_path):
-                utils.download_trained_weights(weights_path)
-
-            # Load weights
-            print("Loading weights ", weights_path)
-
-            # Exclude the last layers because they require a matching
-            # number of classes
-            model.load_weights(weights_path, by_name=True, exclude=[
-                "mrcnn_class_logits", "mrcnn_bbox_fc",
-                "mrcnn_bbox", "mrcnn_mask"])
-            # Train or evaluate
-            train(model)
-    def train_t(self):
-        t = threading.Thread(target = self.train)
-        t.start()
-        t.join()
     def detect(self):
         #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -518,9 +324,9 @@ class Cell(QMainWindow, Ui_MainWindow):
         weights_path = self.weight_path
 
         # Load weights
-        self.append("Loading weights "+str(weights_path))
+        print("Loading weights "+str(weights_path))
         model.load_weights(weights_path, by_name=True)
-        self.append("loaded weights!")
+        print("loaded weights!")
         filenames = []
 
         for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
@@ -531,7 +337,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
-        self.append(str(np.array(filenames)))
+        print(str(np.array(filenames)))
         for j in range(len(filenames)):
             self.progressBar.setValue(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
@@ -541,11 +347,11 @@ class Cell(QMainWindow, Ui_MainWindow):
             r = results[0]
 
             data = numpy.array(r['masks'], dtype=numpy.bool)
-            # self.append(data.shape)
+            # print(data.shape)
             edges = []
             for a in range(len(r['masks'][0][0])):
 
-                # self.append(data.shape)
+                # print(data.shape)
                 # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
                 mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
                 img = Image.fromarray(mask, 'L')
@@ -563,7 +369,7 @@ class Cell(QMainWindow, Ui_MainWindow):
                             roi.write()
                         with ZipFile(self.ROI_PATH, 'a') as myzip:
                             myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                            self.append("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                            print("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                         os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
     def detect_anot(self):
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -828,6 +634,5 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     window = Cell()
-
     window.show()
     sys.exit(app.exec_())
