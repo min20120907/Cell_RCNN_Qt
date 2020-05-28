@@ -51,6 +51,7 @@ import detectingThread
 import cocoThread
 import BWThread
 import anotThread
+import batch_cocoThread
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -124,11 +125,25 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.roi_convert.clicked.connect(self.zip2coco)
         self.l_profile.clicked.connect(self.load_profile)
         self.s_profile.clicked.connect(self.save_profile)
+        self.batch_coco.clicked.connect(self.cocoBatch)
+
         ################################################
     def zip2coco(self):
         self.get_coco()
         self.myThread = QtCore.QThread()
         self.thread = cocoThread.cocoThread(coco_path=self.coco_path, txt= self.format_txt.toPlainText())
+        self.thread.append_coco.connect(self.append)
+        self.thread.progressBar.connect(self.progressBar.setValue)
+        self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
+    def cocoBatch(self):
+        self.get_coco()
+        self.myThread = QtCore.QThread()
+        self.thread = batch_cocoThread.batch_cocoThread(coco_path=self.coco_path, txt= self.format_txt.toPlainText())
         self.thread.append_coco.connect(self.append)
         self.thread.progressBar.connect(self.progressBar.setValue)
         self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
@@ -162,6 +177,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
         self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
 
     def detect(self):
         self.myThread = QtCore.QThread()
@@ -170,6 +187,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
         self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
         
     def detect_anot(self):
         self.myThread = QtCore.QThread()
@@ -178,6 +197,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
         self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
         
     def detect_BW(self):
         self.myThread = QtCore.QThread()
@@ -186,6 +207,8 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
         self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
 ###############################################
     def get_sets(self):
         dir_choose = QFileDialog.getExistingDirectory(
