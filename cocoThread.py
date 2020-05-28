@@ -76,7 +76,7 @@ class cocoThread(QtCore.QThread):
                                 self.progressBar.emit(i+1)
                                 # declare ROI file
                                 roi = read_roi.read_roi_zip(zips[j])
-    
+
                                 roi_list = list(roi.values())
                                 # ROI related file informations
                                 filename = filenames[i].replace("./", "")
@@ -103,10 +103,9 @@ class cocoThread(QtCore.QThread):
                                     }
                                 }
                                 # write json
-                                length = len(list(roi.values()))
-                                
+                                length = len(roi_list)
+
                                 for a in range(length):
-                                    
                                     filename2 = filename.replace(self.txt, "").replace("-", " ").split(" ")
                                     roi_name = roi_list[a]["name"].replace("-", " ").split(" ")
                                     filenum = ""
@@ -118,9 +117,10 @@ class cocoThread(QtCore.QThread):
                                         filenum = "000" + str(int(filename2[-1]))
                                     elif int(filename2[-1]) > 1000 and int(filename2[-1]) < 10000:
                                         filenum = str(int(filename2[-1]))
-                                    #self.append_coco.emit("roi_name: ", roi_name[0], "filename: ", filenum)
+                                    else:
+                                        pass
+                                    self.append_coco.emit("roi_name: ", roi_name[0], "filename: ", filenum)
                                     if filenum == roi_name[0]:
-                                        
                                         x_list = roi_list[a]["x"]
                                         y_list = roi_list[a]["y"]
                                         for l in range(len(x_list)):
