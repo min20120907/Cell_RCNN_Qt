@@ -72,6 +72,13 @@ class cocoThread(QtCore.QThread):
                     # looping and decoding...
                     #self.append_coco.emit(zips)
                     self.progressBar_setMaximum.emit(len(filenames))
+                    
+                    first_filenum = int(filenames[0].replace(self.txt, "").replace("-", " ").split(" ")[-1])
+                    has_zero = False
+                    if first_filenum == 0:
+                        has_zero = True
+                    else:
+                        has_zero = False
                     for j in range(len(zips)):
                         for i in range(len(filenames)):
                             self.progressBar.emit(i+1)
@@ -92,8 +99,7 @@ class cocoThread(QtCore.QThread):
                                 self.append_coco.emit("File not exisited, creating new file...")
                                 original = {}
                             data = {
-                                filename
-                                + str(size): {
+                                filename + str(size): {
                                     "fileref": "",
                                     "size": size,
                                     "filename": filename,
@@ -105,11 +111,18 @@ class cocoThread(QtCore.QThread):
                             # write json
                             
                             for a in roi_list:
+                                
                                 try:
                                     filename2 = filename.replace(self.txt, "").replace("-", " ").split(" ")
-                                    #print("roi_name: ", roi_name[0], "filename: ", filenum)
-                                    if int(filename[-1]) == a['position']:
-                                        print(a)
+                                    roi_name = a["name"].replace("-", " ").split(" ")
+                                    roi_num =int(roi_name[0])
+                                    file_num = int(filename2[-1])
+                                    if has_zero:
+                                        roi_num-=1
+                                    if file_num == roi_num:
+                                        #print(has_zero)
+                                        #print(int(filename2[-1]), " ", roi_num)
+                                        #print(a)
                                         x_list = a["x"]
                                         y_list = a["y"]
                                         for l in range(len(x_list)):
@@ -133,8 +146,9 @@ class cocoThread(QtCore.QThread):
                                                 "region_attributes": {"name": dirname(dir)},
                                             }
                                         }
-                                        
-                                except:
+                                        data[filename + str(size)]["regions"].update(regions)
+                                        original.update(data)
+                                except KeyError:
                                     #Line Exception
                                     if "x1" in a:
                                         x1 = a['x1']
@@ -188,10 +202,34 @@ class cocoThread(QtCore.QThread):
                                                 }
                                             } 
                                         }
+                                        data[filename + str(size)]["regions"].update(regions)
+                                        original.update(data)
                                     else:
-                                        pass
-                                data[filename + str(size)]["regions"].update(regions)
-                                original.update(data)
+                                        TWO_PI=float(44/7.0)
+                                        angle_shift = TWO_PI/8
+                                        phi = 0
+                                        x_list = []
+                                        y_list = []
+
+                                        for i in range(8):
+                                            phi+=angle_shift
+                                            x_list.append(int(a['left'] + a['width'] * np.cos(phi)))
+                                            y_list.append(int(a['top'] + a['height'] * np.sin(phi)))
+                                        print(x_list)
+                                        print(y_list)
+                                        regions = {
+                                            str(a): {
+                                                "shape_attributes": {
+                                                    "name": "polygon",
+                                                    "all_points_x": x_list,
+                                                    "all_points_y": y_list,
+                                                },
+                                                "region_attributes": {"name": dirname(dir)},
+                                            }
+                                        }
+                                        
+                                        data[filename + str(size)]["regions"].update(regions)
+                                        original.update(data)
                             with io.open("via_region_data.json", "w", encoding="utf-8") as f:
                                 f.write(json.dumps(original, ensure_ascii=False))
         

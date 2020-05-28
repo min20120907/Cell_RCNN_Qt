@@ -126,8 +126,10 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.l_profile.clicked.connect(self.load_profile)
         self.s_profile.clicked.connect(self.save_profile)
         self.batch_coco.clicked.connect(self.cocoBatch)
-
+        self.batch_detect.clicked.connect(self.detectBatch)
         ################################################
+    def detectBatch(self):
+        pass
     def zip2coco(self):
         self.get_coco()
         self.myThread = QtCore.QThread()
