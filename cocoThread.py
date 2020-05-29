@@ -155,7 +155,7 @@ class cocoThread(QtCore.QThread):
                                         x2 = a['x2']
                                         y1 = a['y1']
                                         y2 = a['y2']
-                                        width = 600
+                                        width = a['width']
                                         new_x_list =[]
                                         new_y_list = []
 
