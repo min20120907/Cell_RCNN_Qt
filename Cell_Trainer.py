@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
-def launch_Selenium_Thread(self):
-        t = threading.Thread(target=self.log)
-        t.start()
+# import warnings filter
+from warnings import simplefilter
+# ignore all future warnings
+simplefilter(action='ignore', category=FutureWarning)
 #ImageJ tensorflow Python 3.8 Dependencies
 import subprocess
 import os
@@ -23,14 +23,13 @@ from PymageJ.roi import ROIEncoder, ROIRect, ROIPolygon
 import glob
 import numpy
 from PIL import Image
+
 import skimage
 from skimage import feature
 import cv2
 import mlrose
 import progressbar
 import time
-import logging
-logging.getLogger('tensorflow').disabled = True
 #PyQt5 Dependencies
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QApplication, QListView, QFileDialog
@@ -53,6 +52,7 @@ import BWThread
 import anotThread
 import batch_cocoThread
 import batchDetectThread
+
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
