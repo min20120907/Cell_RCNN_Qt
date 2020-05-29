@@ -93,10 +93,10 @@ class cocoThread(QtCore.QThread):
                             try:
                                 f = open("via_region_data.json")
                                 original = json.loads(f.read())
-                                self.append_coco.emit("Writing..."+str(zips[j]))
+                                #self.append_coco.emit("Writing..."+str(zips[j]))
                                 # Do something with the file
                             except FileNotFoundError:
-                                self.append_coco.emit("File not exisited, creating new file...")
+                                #self.append_coco.emit("File not exisited, creating new file...")
                                 original = {}
                             data = {
                                 filename + str(size): {
@@ -150,7 +150,7 @@ class cocoThread(QtCore.QThread):
                                         original.update(data)
                                 except KeyError:
                                     #Line Exception
-                                    if "x1" in a:
+                                    if a['type']=="line":
                                         x1 = a['x1']
                                         x2 = a['x2']
                                         y1 = a['y1']
@@ -204,17 +204,21 @@ class cocoThread(QtCore.QThread):
                                         }
                                         data[filename + str(size)]["regions"].update(regions)
                                         original.update(data)
-                                    else:
-                                        TWO_PI=float(44/7.0)
-                                        angle_shift = TWO_PI/8
+                                    elif a['type']=="oval":
+                                        TWO_PI=np.pi*2
+                                        angles = 128
+                                        angle_shift = TWO_PI/ angles
                                         phi = 0
+                                        center_x = (2*(a['left']) + a['width'])/2
+                                        center_y = (2 * a['top'] + a['height'])/2
                                         x_list = []
                                         y_list = []
 
-                                        for i in range(8):
+                                        for i in range(angles):
                                             phi+=angle_shift
-                                            x_list.append(int(a['left'] + a['width'] * np.cos(phi)))
-                                            y_list.append(int(a['top'] + a['height'] * np.sin(phi)))
+                                            x_list.append(int(center_x + (a['width'] * np.cos(phi)/2)))
+                                            y_list.append(int(center_y + (a['height'] * np.sin(phi)/2)))
+                                            
                                         print(x_list)
                                         print(y_list)
                                         regions = {
@@ -227,9 +231,11 @@ class cocoThread(QtCore.QThread):
                                                 "region_attributes": {"name": dirname(dir)},
                                             }
                                         }
-                                        
+                                
                                         data[filename + str(size)]["regions"].update(regions)
                                         original.update(data)
+                                except IndexError:
+                                    self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")
                             with io.open("via_region_data.json", "w", encoding="utf-8") as f:
                                 f.write(json.dumps(original, ensure_ascii=False))
         
