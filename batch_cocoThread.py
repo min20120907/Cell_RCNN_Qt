@@ -73,9 +73,9 @@ class batch_cocoThread(QtCore.QThread):
                     zips = []
                     for r,d,f in os.walk(str(folder)):
                         for file in f:
-                            if self.txt in file:
+                            if os.path.splitext(file)[-1] == self.txt:
                                 filenames.append(os.path.join(r, file))
-                            elif ".zip" in file:
+                            elif os.path.splitext(file)[-1] == ".zip":
                                 zips.append(os.path.join(r, file))
                     
                     # Sorting

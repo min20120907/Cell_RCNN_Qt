@@ -125,9 +125,12 @@ class batchDetectThread(QtCore.QThread):
         model.load_weights(weights_path, by_name=True)
         self.append.emit("loaded weights!")
         filenames = []
-
-        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
-            filenames.append(f)
+        
+        for d in os.walk(self.DETECT_PATH):
+                for folder in d[1]:
+                    for f in os.walk(self.DETECT_PATH + str(folder)):
+                        if os.path.splitext(filenames)[-1] == self.txt:
+                            filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
         self.progressBar_setMaximum(len(filenames))
@@ -135,7 +138,7 @@ class batchDetectThread(QtCore.QThread):
         filenames.sort()
         file_sum=0
         self.append.emit(str(np.array(filenames)))
-        
+
         for j in range(len(filenames)):
             self.progressBar.emit(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
