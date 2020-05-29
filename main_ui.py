@@ -2,7 +2,7 @@
 
 # Form implementation generated from reading ui file 'MaskRCNN.ui'
 #
-# Created by: PyQt5 UI code generator 5.9.2
+# Created by: PyQt5 UI code generator 5.14.1
 #
 # WARNING! All changes made in this file will be lost!
 
@@ -13,7 +13,7 @@ class Ui_MainWindow(object):
         MainWindow.setObjectName("MainWindow")
         MainWindow.resize(937, 650)
         icon = QtGui.QIcon()
-        icon.addPixmap(QtGui.QPixmap("../../../../../home/min20120907/下載/icon.ppm"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        icon.addPixmap(QtGui.QPixmap("../../../../../../home/min20120907/下載/icon.ppm"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
         MainWindow.setWindowIcon(icon)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
@@ -59,7 +59,7 @@ class Ui_MainWindow(object):
         self.detect_btn.setGeometry(QtCore.QRect(240, 200, 111, 51))
         self.detect_btn.setObjectName("detect_btn")
         self.textBrowser = QtWidgets.QTextBrowser(self.centralwidget)
-        self.textBrowser.setGeometry(QtCore.QRect(50, 270, 881, 261))
+        self.textBrowser.setGeometry(QtCore.QRect(50, 260, 881, 261))
         self.textBrowser.setObjectName("textBrowser")
         self.mrcnn_btn = QtWidgets.QPushButton(self.centralwidget)
         self.mrcnn_btn.setGeometry(QtCore.QRect(490, 80, 151, 31))
@@ -103,6 +103,12 @@ class Ui_MainWindow(object):
         self.steps = QtWidgets.QTextEdit(self.centralwidget)
         self.steps.setGeometry(QtCore.QRect(150, 120, 161, 31))
         self.steps.setObjectName("steps")
+        self.batch_coco = QtWidgets.QPushButton(self.centralwidget)
+        self.batch_coco.setGeometry(QtCore.QRect(720, 200, 201, 25))
+        self.batch_coco.setObjectName("batch_coco")
+        self.batch_detect = QtWidgets.QPushButton(self.centralwidget)
+        self.batch_detect.setGeometry(QtCore.QRect(730, 230, 191, 25))
+        self.batch_detect.setObjectName("batch_detect")
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 937, 28))
@@ -181,6 +187,8 @@ class Ui_MainWindow(object):
 "p, li { white-space: pre-wrap; }\n"
 "</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
 "<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">100</p></body></html>"))
+        self.batch_coco.setText(_translate("MainWindow", "Batch Convert ImageJ ROIs"))
+        self.batch_detect.setText(_translate("MainWindow", "Batch Detect"))
         self.menuMaskRCNN_Trainer.setTitle(_translate("MainWindow", "File"))
         self.menuHelp.setTitle(_translate("MainWindow", "Help"))
         self.actionOpen.setText(_translate("MainWindow", "Open..."))

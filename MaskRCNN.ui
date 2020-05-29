@@ -15,7 +15,7 @@
   </property>
   <property name="windowIcon">
    <iconset>
-    <normaloff>../../../../../home/min20120907/下載/icon.ppm</normaloff>../../../../../home/min20120907/下載/icon.ppm</iconset>
+    <normaloff>../../../../../../home/min20120907/下載/icon.ppm</normaloff>../../../../../../home/min20120907/下載/icon.ppm</iconset>
   </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QPushButton" name="train_btn">
@@ -202,7 +202,7 @@ p, li { white-space: pre-wrap; }
     <property name="geometry">
      <rect>
       <x>50</x>
-      <y>270</y>
+      <y>260</y>
       <width>881</width>
       <height>261</height>
      </rect>
@@ -400,6 +400,32 @@ p, li { white-space: pre-wrap; }
 p, li { white-space: pre-wrap; }
 &lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Ubuntu'; font-size:11pt; font-weight:400; font-style:normal;&quot;&gt;
 &lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;100&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="batch_coco">
+    <property name="geometry">
+     <rect>
+      <x>720</x>
+      <y>200</y>
+      <width>201</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Batch Convert ImageJ ROIs</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="batch_detect">
+    <property name="geometry">
+     <rect>
+      <x>730</x>
+      <y>230</y>
+      <width>191</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Batch Detect</string>
     </property>
    </widget>
   </widget>
