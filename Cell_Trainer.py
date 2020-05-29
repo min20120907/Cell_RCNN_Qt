@@ -52,6 +52,7 @@ import cocoThread
 import BWThread
 import anotThread
 import batch_cocoThread
+import batchDetectThread
 class Cell(QMainWindow, Ui_MainWindow):
     #Global Variables
     epoches = 100
@@ -129,7 +130,14 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.batch_detect.clicked.connect(self.detectBatch)
         ################################################
     def detectBatch(self):
-        pass
+        self.myThread = QtCore.QThread()
+        self.thread = batchDetectThread.batchDetectThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt = self.format_txt.toPlainText(), weight_path = self.weight_path, dataset_path=self.dataset_path, WORK_DIR= self.WORK_DIR)
+        self.thread.append.connect(self.append)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
     def zip2coco(self):
         self.get_coco()
         self.myThread = QtCore.QThread()
@@ -184,7 +192,7 @@ class Cell(QMainWindow, Ui_MainWindow):
 
     def detect(self):
         self.myThread = QtCore.QThread()
-        self.thread = detectingThread.detectingThread()
+        self.thread = detectingThread.detectingThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt = self.format_txt.toPlainText(), weight_path = self.weight_path, dataset_path=self.dataset_path, WORK_DIR= self.WORK_DIR)
         self.thread.append.connect(self.append)
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)

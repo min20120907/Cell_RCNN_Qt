@@ -42,17 +42,17 @@ from os.path import dirname
 import json
 import threading
 
-class detectingThread(QtCore.QThread):
-    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH=''):
-        super(detectingThread, self).__init__(parent)
-        self.DETECT_PATH=DETECT_PATH
+class batchDetectThread(QtCore.QThread):
+    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='', DETECT_PATH=''):
+        super(batchDetectThread, self).__init__(parent)
         self.WORK_DIR = WORK_DIR
         self.weight_path = weight_path
         self.dataset_path = dataset_path
-        self.ROI_PATH=ROI_PATH
+        self.ROI_PATH = ROI_PATH
         self.txt = txt
+        self.DETECT_PATH = DETECT_PATH
     append = QtCore.pyqtSignal(str)
-    progressbar = QtCore.pyqtSignal(int)
+    progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
     def run(self):
         #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
@@ -130,11 +130,12 @@ class detectingThread(QtCore.QThread):
             filenames.append(f)
 
         #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressbar_setMaximum(len(filenames))
+        self.progressBar_setMaximum(len(filenames))
         #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
         self.append.emit(str(np.array(filenames)))
+        
         for j in range(len(filenames)):
             self.progressBar.emit(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
