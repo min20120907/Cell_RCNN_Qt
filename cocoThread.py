@@ -48,8 +48,6 @@ class cocoThread(QtCore.QThread):
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
     def run(self):
-            
-        
         os.chdir(self.coco_path)
         #self.append_coco.emit("Current Path: "+self.coco_path)
         path ="."
@@ -238,4 +236,4 @@ class cocoThread(QtCore.QThread):
                                     self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")
                             with io.open("via_region_data.json", "w", encoding="utf-8") as f:
                                 f.write(json.dumps(original, ensure_ascii=False))
-        
+        self.append_coco.emit("[INFO] Converted Successfully!")

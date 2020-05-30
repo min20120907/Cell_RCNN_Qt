@@ -36,6 +36,9 @@ import io
 from os.path import dirname
 import json
 from shutil import copyfile
+from sympy import Symbol
+from math import sqrt
+from sympy.solvers import solve
 class batch_cocoThread(QtCore.QThread):
     def __init__(self, parent=None, coco_path='', txt = '.png'):
         super(batch_cocoThread, self).__init__(parent)
@@ -63,7 +66,7 @@ class batch_cocoThread(QtCore.QThread):
                             elif ".zip" in file:
                                 count+=1
             self.progressBar_setMaximum.emit(count)
-            print(count)
+            #print(count)
             count2 = 0
             for d in os.walk(path):
                 for folder in d[1]:
@@ -100,7 +103,7 @@ class batch_cocoThread(QtCore.QThread):
                                 #self.append_coco.emit("Writing..."+str(zips[j]))
                                 # Do something with the file
                             except FileNotFoundError:
-                                self.append_coco.emit("File not exisited, creating new file...")
+                                #self.append_coco.emit("File not exisited, creating new file...")
                                 original = {}
                             data = {
                                 filename
@@ -120,6 +123,7 @@ class batch_cocoThread(QtCore.QThread):
                                     roi_name = a["name"].replace("-", " ").split(" ")
                                     roi_num =int(roi_name[0])
                                     file_num = int(filename2[-1])
+                                    has_zero = False
                                     if has_zero:
                                         roi_num-=1
                                     if file_num == roi_num:
@@ -146,7 +150,7 @@ class batch_cocoThread(QtCore.QThread):
                                                     "all_points_x": x_list,
                                                     "all_points_y": y_list,
                                                 },
-                                                "region_attributes": {"name": dirname(dir)},
+                                                "region_attributes": {"name": dirname(folder)},
                                             }
                                         }
                                         data[filename + str(size)]["regions"].update(regions)
@@ -201,7 +205,7 @@ class batch_cocoThread(QtCore.QThread):
                                                     "all_points_y": new_y_list
                                                 },
                                                 "region_attributes": {
-                                                    "name": dirname(dir)
+                                                    "name": dirname(folder)
                                                 }
                                             } 
                                         }
@@ -221,9 +225,6 @@ class batch_cocoThread(QtCore.QThread):
                                             phi+=angle_shift
                                             x_list.append(int(center_x + (a['width'] * np.cos(phi)/2)))
                                             y_list.append(int(center_y + (a['height'] * np.sin(phi)/2)))
-                                            
-                                        print(x_list)
-                                        print(y_list)
                                         regions = {
                                             str(a): {
                                                 "shape_attributes": {
@@ -231,13 +232,15 @@ class batch_cocoThread(QtCore.QThread):
                                                     "all_points_x": x_list,
                                                     "all_points_y": y_list,
                                                 },
-                                                "region_attributes": {"name": dirname(dir)},
+                                                "region_attributes": {"name": dirname(folder)},
                                             }
                                         }
                                 
                                         data[filename + str(size)]["regions"].update(regions)
                                         original.update(data)
-                                except IndexError:
-                                    self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")          
-
+                                except IndexError or FileNotFoundError:
+                                    self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")         
+                            with io.open("via_region_data.json", "w", encoding="utf-8") as f:
+                                f.write(json.dumps(original, ensure_ascii=False)) 
+            self.append_coco.emit("[INFO] Converted Successfully!")
                 

@@ -131,7 +131,7 @@ class Cell(QMainWindow, Ui_MainWindow):
     def detectBatch(self):
         self.myThread = QtCore.QThread()
         self.thread = batchDetectThread.batchDetectThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt=self.format_txt.toPlainText(
-        ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.confidence.toPlainText(),
+        ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.conf_rate.toPlainText(),
         epoches=self.epochs.toPlainText(),step=self.steps.toPlainText() )
         self.thread.append.connect(self.append)
         self.thread.moveToThread(self.myThread)
@@ -203,7 +203,7 @@ class Cell(QMainWindow, Ui_MainWindow):
     def detect(self):
         self.myThread = QtCore.QThread()
         self.thread = detectingThread.detectingThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt=self.format_txt.toPlainText(
-        ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.confidence.toPlainText(),
+        ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.conf_rate.toPlainText(),
         epoches=self.epochs.toPlainText(),step=self.steps.toPlainText() )
         self.thread.append.connect(self.append)
         self.thread.moveToThread(self.myThread)
@@ -307,14 +307,15 @@ class Cell(QMainWindow, Ui_MainWindow):
 ######################################################
 
     def save_ROIs(self):
-        fileName_choose, filetype = QFileDialog.getSaveFileName(
-            self, "Save ROIs zip file...", self.ROI_PATH, "ROIs Archives (*.zip)"
+        dir_choose = QFileDialog.getExistingDirectory(
+            self, "Select an COCO directory...", self.ROI_PATH
         )
-
-        if fileName_choose == "":
-            self.append("\nCanceled")
+        if dir_choose == "":
+            self.append("Cancel")
             return
-        self.ROI_PATH = fileName_choose
+        self.append("Selected:")
+        self.append(dir_choose)
+        self.ROI_PATH = dir_choose
 ######################################################
 
 

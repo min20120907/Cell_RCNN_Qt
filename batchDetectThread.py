@@ -132,12 +132,12 @@ class batchDetectThread(QtCore.QThread):
         
         for d in os.walk(self.DETECT_PATH):
             for folder in d[1]:
-                for f in os.walk(self.DETECT_PATH + str(folder)):
-                    if os.path.splitext(filenames)[-1] == self.txt:
+                for f in glob.glob(self.DETECT_PATH+"/"+str(folder)+"/*"+self.txt):
+                    if os.path.splitext(f)[-1] == str(self.txt):
                         filenames.append(f)
-
+                
                 #bar = progressbar.ProgressBar(max_value=len(filenames))
-                self.progressBar_setMaximum(len(filenames))
+                self.progressBar_setMaximum.emit(len(filenames))
                 #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
                 filenames.sort()
                 file_sum=0
