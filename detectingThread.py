@@ -8,9 +8,6 @@ import re
 import time
 import numpy as np
 import tensorflow as tf
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import skimage.io
 import codecs
 from zipfile import ZipFile
@@ -22,7 +19,6 @@ import skimage
 from skimage import feature
 import cv2
 import mlrose
-import progressbar
 import time
 import logging
 logging.getLogger('tensorflow').disabled = True
@@ -43,7 +39,7 @@ import json
 import threading
 
 class detectingThread(QtCore.QThread):
-    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH=''):
+    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(detectingThread, self).__init__(parent)
         self.DETECT_PATH=DETECT_PATH
         self.WORK_DIR = WORK_DIR
@@ -51,8 +47,12 @@ class detectingThread(QtCore.QThread):
         self.dataset_path = dataset_path
         self.ROI_PATH=ROI_PATH
         self.txt = txt
+        self.DEVICE=DEVICE
+        self.conf_rate=conf_rate
+        self.epoches=epoches
+        self.step = step
     append = QtCore.pyqtSignal(str)
-    progressbar = QtCore.pyqtSignal(int)
+    progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
     def run(self):
         #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
@@ -126,11 +126,11 @@ class detectingThread(QtCore.QThread):
         self.append.emit("loaded weights!")
         filenames = []
 
-        for f in glob.glob(self.DETECT_PATH+"/*"+self.format_txt.toPlainText()):
+        for f in glob.glob(self.DETECT_PATH+"/*"+self.txt):
             filenames.append(f)
 
-        #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressbar_setMaximum(len(filenames))
+        #bar = progressBar.progressBar(max_value=len(filenames))
+        self.progressBar_setMaximum.emit(len(filenames))
         #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
         filenames.sort()
         file_sum=0
@@ -164,7 +164,7 @@ class detectingThread(QtCore.QThread):
                         roi_obj = ROIPolygon(x, y)
                         with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
                             roi.write()
-                        with ZipFile(self.ROI_PATH, 'a') as myzip:
+                        with ZipFile(os.path.abspath(os.path.dirname(self.ROI_PATH))+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+"-"+self.ROI_PATH, 'a') as myzip:
                             myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                             self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                         os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")

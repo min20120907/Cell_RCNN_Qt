@@ -43,14 +43,18 @@ import json
 import threading
 
 class batchDetectThread(QtCore.QThread):
-    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='', DETECT_PATH=''):
+    def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(batchDetectThread, self).__init__(parent)
+        self.DETECT_PATH=DETECT_PATH
         self.WORK_DIR = WORK_DIR
         self.weight_path = weight_path
         self.dataset_path = dataset_path
-        self.ROI_PATH = ROI_PATH
+        self.ROI_PATH=ROI_PATH
         self.txt = txt
-        self.DETECT_PATH = DETECT_PATH
+        self.DEVICE=DEVICE
+        self.conf_rate=conf_rate
+        self.epoches=epoches
+        self.step = step
     append = QtCore.pyqtSignal(str)
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
@@ -127,48 +131,48 @@ class batchDetectThread(QtCore.QThread):
         filenames = []
         
         for d in os.walk(self.DETECT_PATH):
-                for folder in d[1]:
-                    for f in os.walk(self.DETECT_PATH + str(folder)):
-                        if os.path.splitext(filenames)[-1] == self.txt:
-                            filenames.append(f)
+            for folder in d[1]:
+                for f in os.walk(self.DETECT_PATH + str(folder)):
+                    if os.path.splitext(filenames)[-1] == self.txt:
+                        filenames.append(f)
 
-        #bar = progressbar.ProgressBar(max_value=len(filenames))
-        self.progressBar_setMaximum(len(filenames))
-        #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
-        filenames.sort()
-        file_sum=0
-        self.append.emit(str(np.array(filenames)))
+                #bar = progressbar.ProgressBar(max_value=len(filenames))
+                self.progressBar_setMaximum(len(filenames))
+                #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
+                filenames.sort()
+                file_sum=0
+                self.append.emit(str(np.array(filenames)))
 
-        for j in range(len(filenames)):
-            self.progressBar.emit(j)
-            image = skimage.io.imread(os.path.join(filenames[j]))
-            # Run object detection
-            results = model.detect([image], verbose=0)
+                for j in range(len(filenames)):
+                    self.progressBar.emit(j)
+                    image = skimage.io.imread(os.path.join(filenames[j]))
+                    # Run object detection
+                    results = model.detect([image], verbose=0)
 
-            r = results[0]
+                    r = results[0]
 
-            data = numpy.array(r['masks'], dtype=numpy.bool)
-            # self.append.emit(data.shape)
-            edges = []
-            for a in range(len(r['masks'][0][0])):
+                    data = numpy.array(r['masks'], dtype=numpy.bool)
+                    # self.append.emit(data.shape)
+                    edges = []
+                    for a in range(len(r['masks'][0][0])):
+                    
+                        # self.append.emit(data.shape)
+                        # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
+                        mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
+                        img = Image.fromarray(mask, 'L')
+                        g = cv2.Canny(np.array(img),10,100)
+                        contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+                        self.progressBar.emit(j)
+                        for contour in contours:
+                            file_sum+=1
 
-                # self.append.emit(data.shape)
-                # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
-                mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
-                img = Image.fromarray(mask, 'L')
-                g = cv2.Canny(np.array(img),10,100)
-                contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
-                self.progressBar.emit(j)
-                for contour in contours:
-                    file_sum+=1
-
-                    x = [i[0][0] for i in contour]
-                    y = [i[0][1] for i in contour]
-                    if(len(x)>=100):
-                        roi_obj = ROIPolygon(x, y)
-                        with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
-                            roi.write()
-                        with ZipFile(self.ROI_PATH, 'a') as myzip:
-                            myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                            self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                        os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                            x = [i[0][0] for i in contour]
+                            y = [i[0][1] for i in contour]
+                            if(len(x)>=100):
+                                roi_obj = ROIPolygon(x, y)
+                                with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
+                                    roi.write()
+                                with ZipFile(os.path.abspath(os.path.dirname(self.ROI_PATH))+"/"+str(folder)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                                    myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                                    self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                                os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
