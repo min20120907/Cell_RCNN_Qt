@@ -10,6 +10,7 @@ import cocoThread
 import detectingThread
 import trainingThread
 import threading
+import imgseq_thread
 from os.path import dirname
 import io
 import read_roi
@@ -20,8 +21,6 @@ from PyQt5.QtCore import pyqtSlot
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 from PyQt5.QtWidgets import QMainWindow, QApplication, QListView, QFileDialog
 from PyQt5 import QtCore, QtGui, QtWidgets
-import progressbar
-import mlrose
 import cv2
 from skimage import feature
 import skimage
@@ -58,6 +57,7 @@ class Cell(QMainWindow, Ui_MainWindow):
     DETECT_PATH = ""
     coco_path = ""
     steps_num = 1
+    is_path = ""
     # Json read
 
     def load_profile(self):
@@ -82,6 +82,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.steps_num = f['steps']
         self.format_txt.setText(f['txt'])
         self.steps.setText(str(f['steps']))
+        self.is_path = f['is_path']
         self.append("Json profile loaded!")
     # Json write
 
@@ -98,6 +99,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         tmp['weight_path'] = self.weight_path
         tmp['steps'] = self.steps.toPlainText()
         tmp['txt'] = self.format_txt.toPlainText()
+        tmp['is_path'] = self.is_path
         with open('profile.json', 'w') as json_file:
             json.dump(tmp, json_file)
         self.append("Json Profile saved!")
@@ -269,7 +271,17 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("Selected:")
         self.DETECT_PATH = dir_choose
         self.append(self.DETECT_PATH)
-
+###################################################
+    def get_is_path(self):
+        dir_choose = QFileDialog.getExistingDirectory(
+            self, "Select an Image Sequence directory...", self.DETECT_PATH
+        )
+        if dir_choose == "":
+            self.append("Cancel")
+            return
+        self.append("Selected:")
+        self.is_path = dir_choose
+        self.append(self.is_path)
 ##################################################
     def get_mrcnn(self):
         dir_choose = QFileDialog.getExistingDirectory(
