@@ -428,6 +428,19 @@ p, li { white-space: pre-wrap; }
      <string>Batch Detect</string>
     </property>
    </widget>
+   <widget class="QPushButton" name="is_btn">
+    <property name="geometry">
+     <rect>
+      <x>340</x>
+      <y>120</y>
+      <width>131</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Image Sequence</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
@@ -435,7 +448,7 @@ p, li { white-space: pre-wrap; }
      <x>0</x>
      <y>0</y>
      <width>937</width>
-     <height>28</height>
+     <height>22</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuMaskRCNN_Trainer">

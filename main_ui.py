@@ -2,11 +2,13 @@
 
 # Form implementation generated from reading ui file 'MaskRCNN.ui'
 #
-# Created by: PyQt5 UI code generator 5.14.1
+# Created by: PyQt5 UI code generator 5.14.2
 #
 # WARNING! All changes made in this file will be lost!
 
+
 from PyQt5 import QtCore, QtGui, QtWidgets
+
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -109,9 +111,12 @@ class Ui_MainWindow(object):
         self.batch_detect = QtWidgets.QPushButton(self.centralwidget)
         self.batch_detect.setGeometry(QtCore.QRect(730, 230, 191, 25))
         self.batch_detect.setObjectName("batch_detect")
+        self.is_btn = QtWidgets.QPushButton(self.centralwidget)
+        self.is_btn.setGeometry(QtCore.QRect(340, 120, 131, 31))
+        self.is_btn.setObjectName("is_btn")
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
-        self.menubar.setGeometry(QtCore.QRect(0, 0, 937, 28))
+        self.menubar.setGeometry(QtCore.QRect(0, 0, 937, 22))
         self.menubar.setObjectName("menubar")
         self.menuMaskRCNN_Trainer = QtWidgets.QMenu(self.menubar)
         self.menuMaskRCNN_Trainer.setObjectName("menuMaskRCNN_Trainer")
@@ -189,10 +194,10 @@ class Ui_MainWindow(object):
 "<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">100</p></body></html>"))
         self.batch_coco.setText(_translate("MainWindow", "Batch Convert ImageJ ROIs"))
         self.batch_detect.setText(_translate("MainWindow", "Batch Detect"))
+        self.is_btn.setText(_translate("MainWindow", "Image Sequence"))
         self.menuMaskRCNN_Trainer.setTitle(_translate("MainWindow", "File"))
         self.menuHelp.setTitle(_translate("MainWindow", "Help"))
         self.actionOpen.setText(_translate("MainWindow", "Open..."))
         self.actionUpload_weights.setText(_translate("MainWindow", "Upload weights"))
         self.actionUpload_dataset.setText(_translate("MainWindow", "Upload dataset"))
         self.actionConvert_ImageJ_ROIs.setText(_translate("MainWindow", "Convert ImageJ ROIs"))
-
