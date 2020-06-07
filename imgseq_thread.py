@@ -51,7 +51,7 @@ class imgseq_thread(QtCore.QThread):
         for f in glob.glob(self.is_path+"/*"+self.txt):
             im = io.imread(f)
             self.progressBar_setMaximum.emit(im.shape[0])
-            progress=0
+            progress=1
             for i in range(len(im)):
                 self.progressBar.emit(progress)
                 progress+=1
