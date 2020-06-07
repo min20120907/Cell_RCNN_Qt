@@ -128,6 +128,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.s_profile.clicked.connect(self.save_profile)
         self.batch_coco.clicked.connect(self.cocoBatch)
         self.batch_detect.clicked.connect(self.detectBatch)
+        self.is_btn.clicked.connect(self.exec_is_path)
         ################################################
 
     def detectBatch(self):
@@ -157,7 +158,19 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.myThread.start()
         self.myThread.exit(0)
         self.thread.exit(0)
-
+    def exec_is_path(self):
+        self.get_is_path()
+        self.myThread = QtCore.QThread()
+        self.thread = imgseq_thread.imgseq_thread(
+            is_path=self.is_path, txt=self.format_txt.toPlainText())
+        self.thread.append.connect(self.append)
+        self.thread.progressBar.connect(self.progressBar.setValue)
+        self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
     def cocoBatch(self):
         self.get_coco()
         self.myThread = QtCore.QThread()
