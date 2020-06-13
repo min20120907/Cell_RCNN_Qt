@@ -128,10 +128,11 @@ class batchDetectThread(QtCore.QThread):
         self.append.emit("Loading weights "+str(weights_path))
         model.load_weights(weights_path, by_name=True)
         self.append.emit("loaded weights!")
-        filenames = []
         
         for d in os.walk(self.DETECT_PATH):
             for folder in d[1]:
+                filenames = []
+                self.append.emit("folder"+str(folder))
                 for f in glob.glob(self.DETECT_PATH+"/"+str(folder)+"/*"+self.txt):
                     if os.path.splitext(f)[-1] == str(self.txt):
                         filenames.append(f)
@@ -141,16 +142,14 @@ class batchDetectThread(QtCore.QThread):
                 #filenames = sorted(filenames, key=lambda a : int(a.replace(self.format_txt.toPlainText(), "").replace("-", " ").split(" ")[6]))
                 filenames.sort()
                 file_sum=0
-                self.append.emit(str(np.array(filenames)))
-
+                #self.append.emit(str(np.array(filenames)))
                 for j in range(len(filenames)):
+                    self.append.emit("files: "+str(filenames))
                     self.progressBar.emit(j)
                     image = skimage.io.imread(os.path.join(filenames[j]))
                     # Run object detection
                     results = model.detect([image], verbose=0)
-
                     r = results[0]
-
                     data = numpy.array(r['masks'], dtype=numpy.bool)
                     # self.append.emit(data.shape)
                     edges = []
@@ -165,14 +164,13 @@ class batchDetectThread(QtCore.QThread):
                         self.progressBar.emit(j)
                         for contour in contours:
                             file_sum+=1
-
                             x = [i[0][0] for i in contour]
                             y = [i[0][1] for i in contour]
                             if(len(x)>=100):
                                 roi_obj = ROIPolygon(x, y)
                                 with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
                                     roi.write()
-                                with ZipFile(os.path.abspath(os.path.dirname(self.ROI_PATH))+"/"+str(folder)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                                with ZipFile(self.ROI_PATH+"/"+str(folder)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
                                     myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                     self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                 os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
