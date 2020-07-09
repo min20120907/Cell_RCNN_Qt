@@ -20,7 +20,6 @@ from PIL import Image
 import skimage
 from skimage import feature
 import cv2
-import mlrose
 import progressbar
 import time
 import logging
@@ -50,20 +49,8 @@ class batch_cocoThread(QtCore.QThread):
     append_coco = QtCore.pyqtSignal(str)
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
-    def memory_limit(self):
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        resource.setrlimit(resource.RLIMIT_AS, (self.get_memory() * 1024 / 2, hard))
 
-    def get_memory(self):
-        with open('/proc/meminfo', 'r') as mem:
-            free_memory = 0
-            for i in mem:
-                sline = i.split()
-                if str(sline[0]) in ('MemFree:', 'Buffers:', 'Cached:'):
-                    free_memory += int(sline[1])
-        return free_memory
-
-    def run_func(self,zips,filenames):
+    def run_func(self,zips,filenames,json_name):
         os.chdir(self.coco_path)
         #self.append_coco.emit("Current Path: "+self.coco_path)
         path ="."
@@ -89,10 +76,12 @@ class batch_cocoThread(QtCore.QThread):
                         h, w, c = im.shape
                         size = os.path.getsize(self.coco_path+'/'+filename)
                         try:
-                            f = open("via_region_data.json")
+                            f = open(json_name)
                             original = json.loads(f.read())
                             #self.append_coco.emit("Writing..."+str(zips[j]))
                             # Do something with the file
+                        except ValueError:  # includes simplejson.decoder.JSONDecodeError
+                            print('Decoding JSON has failed')
                         except FileNotFoundError:
                             #self.append_coco.emit("File not exisited, creating new file...")
                             original = {}
@@ -230,51 +219,62 @@ class batch_cocoThread(QtCore.QThread):
                             except IndexError or FileNotFoundError:
                                 self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")         
 
-                        with io.open("via_region_data.json", "w", encoding="utf-8") as f:
+                        with io.open(json_name, "w", encoding="utf-8") as f:
                             f.write(json.dumps(original, ensure_ascii=False)) 
             
         
     def run(self):
-        self.memory_limit() # Limitates maximun memory usage to half
-        try:
-            os.chdir(self.coco_path)
-            #self.append_coco.emit("Current Path: "+self.coco_path)
-            path ="."
-            # ROI arrays
-
-            dirs =[]    
-            #scanning
-            count =0
-
-            for d in os.walk(path):
-                for folder in d[1]:
-                    for r,d,f in os.walk(str(folder)):
-                        for file in f:
-                            if self.txt in file:
-                                count+=1
-                            elif ".zip" in file:
-                                count+=1
-            self.progressBar_setMaximum.emit(count)
-            #print(count)
-
-            for d in os.walk(path):
-                for folder in d[1]:
-                    filenames = []
-                    zips = []
-                    for r,d,f in os.walk(str(folder)):
-                        for file in f:
-                            if os.path.splitext(file)[-1] == self.txt:
-                                filenames.append(os.path.join(r, file))
-                            elif os.path.splitext(file)[-1] == ".zip":
-                                zips.append(os.path.join(r, file))
-            
-                            self.append_coco.emit(str(filenames))
-                            self.append_coco.emit(str(zips))
-                            p = Process(target=self.run_func,args=(zips,filenames))
-                            p.start()
+        os.chdir(self.coco_path)
+        #self.append_coco.emit("Current Path: "+self.coco_path)
+        path ="."
+        # ROI arrays
+        dirs =[]    
+        #scanning
+        count =0
+        for d in os.walk(path):
+            for folder in d[1]:
+                for r,d,f in os.walk(str(folder)):
+                    for file in f:
+                        if self.txt in file:
+                            count+=1
+                        elif ".zip" in file:
+                            count+=1
+        self.progressBar_setMaximum.emit(count)
+        #print(count)
+        processes = []
+        i=1
+        j=1
+        for d in os.walk(path):
+            for folder in d[1]:
+                filenames = []
+                zips = []
+                for r,d,f in os.walk(str(folder)):
+                    for file in f:
+                        if os.path.splitext(file)[-1] == self.txt:
+                            filenames.append(os.path.join(r, file))
+                        elif os.path.splitext(file)[-1] == ".zip":
+                            zips.append(os.path.join(r, file))
+                    
+                    self.append_coco.emit(str(filenames))
+                    self.append_coco.emit(str(zips))
+                    p = Process(target=self.run_func, args=(zips,filenames,"via_region_data_part_"+str(i)+".json"))
+                    processes.append(p)
+                    try:
+                        p.start()
+                    except EOFError: #捕获异常EOFError 后返回None
+                        return None
+                    i+=1
+                    j+=1
+                    if j > 8:
+                        for x in range(8):
                             p.join()
+                        j=1
 
-            self.append_coco.emit("[INFO] Converted Successfully!")      
-        except MemoryError:
-            sys.stderr.write('\n\nERROR: Memory Exception\n')
-            sys.exit(1)  
+                    print("number ", i)
+        
+        
+                        
+        
+                        
+        
+

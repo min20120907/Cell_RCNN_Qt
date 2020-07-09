@@ -21,7 +21,6 @@ from PIL import Image
 import skimage
 from skimage import feature
 import cv2
-import mlrose
 import progressbar
 import time
 import logging
@@ -42,6 +41,8 @@ from os.path import dirname
 import json
 import threading
 
+	
+
 class batchDetectThread(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(batchDetectThread, self).__init__(parent)
@@ -58,6 +59,7 @@ class batchDetectThread(QtCore.QThread):
     append = QtCore.pyqtSignal(str)
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
+    
     def run(self):
         #WORK_DIR="/media/min20120907/Resources/Linux/MaskRCNN"
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
@@ -65,7 +67,6 @@ class batchDetectThread(QtCore.QThread):
         # Import Mask RCNN
         sys.path.append(ROOT_DIR)  # To find local version of the library
         # import training functions
-        
         import mrcnn.utils
         import mrcnn.visualize
         import mrcnn.visualize

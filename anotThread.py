@@ -21,7 +21,6 @@ from PIL import Image
 import skimage
 from skimage import feature
 import cv2
-import mlrose
 import progressbar
 import time
 import logging

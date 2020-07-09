@@ -18,7 +18,6 @@ from PIL import Image
 import skimage
 from skimage import feature
 import cv2
-import mlrose
 import time
 import logging
 logging.getLogger('tensorflow').disabled = True
@@ -164,7 +163,7 @@ class detectingThread(QtCore.QThread):
                         roi_obj = ROIPolygon(x, y)
                         with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
                             roi.write()
-                        with ZipFile(os.path.abspath(os.path.dirname(self.ROI_PATH))+basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                        with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
                             myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                             self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                         os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")

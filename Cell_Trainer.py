@@ -44,7 +44,6 @@ import sys
 import struct
 import os
 import subprocess
-
 class Cell(QMainWindow, Ui_MainWindow):
     # Global Variables
     epoches = 100
@@ -105,7 +104,6 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.append("Json Profile saved!")
 
     def __init__(self, parent=None):
-
         super(Cell, self).__init__(parent)
 
         self.setupUi(self)
@@ -175,7 +173,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.get_coco()
         self.myThread = QtCore.QThread()
         self.thread = batch_cocoThread.batch_cocoThread(
-            coco_path=self.coco_path, txt=self.format_txt.toPlainText())
+        coco_path=self.coco_path, txt=self.format_txt.toPlainText())
         self.thread.append_coco.connect(self.append)
         self.thread.progressBar.connect(self.progressBar.setValue)
         self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
