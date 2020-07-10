@@ -261,7 +261,7 @@ class batch_cocoThread(QtCore.QThread):
                     p = Process(target=self.run_func, args=(zips,filenames,"via_region_data_part_"+str(i)+".json",folder))                    
                     procs.append(p)
                     i+=1
-        print("Scanning completed! i=",i)
+        self.append_coco.emit("Scanning completed! i=",i)
         self.progressBar_setMaximum.emit(i)
         start_time = time.time()
         k=0
@@ -283,6 +283,7 @@ class batch_cocoThread(QtCore.QThread):
         with open("via_region_data.json", "w") as outfile:
              json.dump(result, outfile)
              outfile.close()
+        self.progressBar.emit(i)
         self.append_coco.emit("---CONVERT ENDED----")
         self.append_coco.emit("---" + str(time.time() - start_time)+"secs ----")
                 
