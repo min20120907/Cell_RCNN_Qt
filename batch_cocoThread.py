@@ -75,6 +75,7 @@ class batch_cocoThread(QtCore.QThread):
                 try:
                     f = open(json_name)
                     original = json.loads(f.read())
+                    f.close()
                     #self.append_coco.emit("Writing..."+str(zips[j]))
                     # Do something with the file
                 except ValueError:  # includes simplejson.decoder.JSONDecodeError
@@ -217,6 +218,7 @@ class batch_cocoThread(QtCore.QThread):
                         self.append_coco.emit("[ERROR] Can't find any type specific files! (Maybe check the file type)")        
                 with io.open(json_name, "w", encoding="utf-8") as f:
                     f.write(json.dumps(original, ensure_ascii=False))
+                    f.close()
         print("Converted File: ", json_name)
         
             
@@ -272,7 +274,17 @@ class batch_cocoThread(QtCore.QThread):
                 for i in range(8):
                     p.join()
                 j=1
-        print("--- %s seconds ---" % (time.time() - start_time))
+        result = {}
+        self.append_coco.emit("Combining...")
+        for f in glob.glob("*.json"):
+            with open(f, "r") as infile:
+                result.update(json.load(infile))
+                infile.close()
+        with open("via_region_data.json", "w") as outfile:
+             json.dump(result, outfile)
+             outfile.close()
+        self.append_coco.emit("---CONVERT ENDED----")
+        self.append_coco.emit("---" + str(time.time() - start_time)+"secs ----")
                 
                 
         
