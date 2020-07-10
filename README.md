@@ -8,3 +8,7 @@
  pip install -r requirements.txt
 ```
 - MaskRCNN-like repository
+- set more files opening in the system settings
+```
+ulimit -n 20000
+```
