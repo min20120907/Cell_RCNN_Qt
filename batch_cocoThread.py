@@ -274,7 +274,19 @@ class batch_cocoThread(QtCore.QThread):
                 for i in range(8):
                     p.join()
                 j=1
-        print("--- %s seconds ---" % (time.time() - start_time))
+        result = {}
+        self.append_coco.emit("Combining...")
+        for f in glob.glob("*.json"):
+            with open(f, "r") as infile:
+                result.update(json.load(infile))
+                infile.close()
+
+
+        with open("merged_file.json", "w") as outfile:
+             json.dump(result, outfile)
+             outfile.close()
+        self.append_coco.emit("---CONVERT ENDED----")
+        self.append_coco.emit("---" + str(time.time() - start_time)+"----")
                 
                 
         
