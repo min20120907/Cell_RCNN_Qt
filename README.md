@@ -12,3 +12,11 @@
 ```
 ulimit -n 20000
 ```
+### Troubleshooting
+- The moment when Windows COCO json not working on Linux, do this command
+```
+sed 's+\/+\\\\+g' 
+```
+- Relatively you can do this to Linux
+```
+sed 's+\\\\+\/+g' 
