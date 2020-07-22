@@ -3,6 +3,7 @@
 ## Cell RCNN Segmentation
 
 ### Pre-requirements
+- python 3.5 or later
 - tensorflow and ImageJ packages:
 ```bash
  pip install -r requirements.txt
