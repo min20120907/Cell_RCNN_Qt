@@ -169,7 +169,7 @@ class trainingThread(QtCore.QThread):
                     one mask per instance.
                 class_ids: a 1D array of class IDs of the instance masks.
                 """
-                # If not a bottle dataset image, delegate to parent class.
+                # If not a balloon dataset image, delegate to parent class.
                 image_info = self.image_info[image_id]
                 if image_info["source"] != "cell":
                     return super(self.__class__, self).load_mask(image_id)
@@ -186,7 +186,7 @@ class trainingThread(QtCore.QThread):
 
                 # Return mask, and array of class IDs of each instance. Since we have
                 # one class ID only, we return an array of 1s
-                return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
+                return mask, np.ones([mask.shape[-1]], dtype=np.int32)
 
             def image_reference(self, image_id):
                 """Return the path of the image."""

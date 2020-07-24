@@ -4,6 +4,7 @@ from warnings import simplefilter
 simplefilter(action='ignore', category=FutureWarning)
 import batchDetectThread
 import batch_cocoThread
+import batch_cocoShrinkThread
 import anotThread
 import BWThread
 import cocoThread
@@ -112,7 +113,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         # Button Events
         self.train_btn.clicked.connect(self.train_t)
         self.detect_btn.clicked.connect(self.detect)
-
+        self.batch_snc.clicked.connect(self.sncBatch)
         self.gpu_train.clicked.connect(self.gpu_train_func)
         self.cpu_train.clicked.connect(self.cpu_train_func)
         self.clear_logs.clicked.connect(self.clear)
@@ -182,7 +183,19 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.myThread.start()
         self.myThread.exit(0)
         self.thread.exit(0)
-
+    def sncBatch(self):
+        self.get_coco()
+        self.myThread = QtCore.QThread()
+        self.thread = batch_cocoShrinkThread.batch_sncThread(
+        coco_path=self.coco_path, txt=self.format_txt.toPlainText())
+        self.thread.append_coco.connect(self.append)
+        self.thread.progressBar.connect(self.progressBar.setValue)
+        self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
+        self.thread.moveToThread(self.myThread)
+        self.myThread.started.connect(self.thread.run)
+        self.myThread.start()
+        self.myThread.exit(0)
+        self.thread.exit(0)
     def append(self, a):
         now = datetime.now()
         current_time = now.strftime("[%m-%d-%Y %H:%M:%S]")

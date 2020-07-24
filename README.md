@@ -3,26 +3,8 @@
 ## Cell RCNN Segmentation
 
 ### Pre-requirements
-- python 3.5 or later
 - tensorflow and ImageJ packages:
 ```bash
  pip install -r requirements.txt
 ```
 - MaskRCNN-like repository
-- set more files opening in the system settings
-```
-ulimit -n 20000
-```
-
-
-
-### Troubleshooting
-- The moment when Windows COCO json not working on Linux, do this command
-```
-sh win2linCOCO.sh 
-```
-- Relatively you can do this to Linux
-```
-sh lin2winCOCO.sh
-```
-#### COMPLETE JSON ONLY

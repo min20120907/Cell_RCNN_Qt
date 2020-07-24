@@ -101,9 +101,16 @@ class batch_cocoThread(QtCore.QThread):
                         roi_name = a["name"].replace("-", " ").split(" ")
                         roi_num =int(roi_name[0])
                         file_num = int(filename2[-1])
+                        first_filenum = int(filenames[0].replace(self.txt, "").replace("-", " ").split(" ")[-1])
                         has_zero = False
+                        if first_filenum == 0:
+                            has_zero = True
+                        else:
+                            has_zero = False
+                        
                         if has_zero:
                             roi_num-=1
+                        
                         if file_num == roi_num:
                             #print(has_zero)
                             #print(int(filename2[-1]), " ", roi_num)
@@ -112,11 +119,11 @@ class batch_cocoThread(QtCore.QThread):
                             y_list = a["y"]
                             for l in range(len(x_list)):
                                 if x_list[l] >= w:
-                                    x_list[l] = w
+                                    x_list[l] = w-1
                                 #  self.append_coco.emit(x_list[j])
                             for k in range(len(y_list)):
                                 if y_list[k] >=h:
-                                    y_list[k] = h
+                                    y_list[k] = h-1
                             #self.append_coco.emit(y_list[k])
                             # parameters
                             x_list.append(a["x"][0])
@@ -167,12 +174,12 @@ class batch_cocoThread(QtCore.QThread):
                             #print("y坐標", new_y_list)
                             #fix index out of bound exception
                             for j in range(len(new_x_list)):
-                                if(new_x_list[j]>=2160):
-                                    new_x_list[j] = 2159
+                                if(new_x_list[j]>=h):
+                                    new_x_list[j] = h-1
                                     #print(new_x_list[j])
                             for k in range(len(new_y_list)):
-                                if(new_y_list[k]>=2160):
-                                    new_y_list[k] = 2159
+                                if(new_y_list[k]>=w):
+                                    new_y_list[k] = w-1
                                     #print(new_y_list[k])
                             regions = {
                                 str(a): {
