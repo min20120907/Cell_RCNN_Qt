@@ -51,7 +51,19 @@ class batch_sncThread(QtCore.QThread):
     EOF_STATUS = False
     
     def run_func(self,zips,filenames,json_name,folder):
-        
+        def parseInt(a):
+            filenum=""
+            if int(a) >= 100 and int(a) < 1000:
+                filenum = "0" + str(a)
+            elif int(a) >= 10 and int(a) < 100:
+                filenum = "00" + str(a)
+            elif int(a) >= 1 and int(a) < 10:
+                filenum = "000" + str(a)
+            elif int(a) >= 1000 and int(a) < 10000:
+                 filenum = str(a)
+            else:
+                filenum="0000"
+            return filenum
         count2 = 0
                    
         # Sorting
@@ -99,8 +111,9 @@ class batch_sncThread(QtCore.QThread):
                         "regions": {},
                     }
                 }
+                file_sum = 0
                 for a in roi_list:
-                
+                    file_sum+=1
                     try:
                         filename2 = filename.replace(self.txt, "").replace("-", " ").split(" ")
                         roi_name = a["name"].replace("-", " ").split(" ")
@@ -125,11 +138,20 @@ class batch_sncThread(QtCore.QThread):
                             for l in range(len(x_list)):
                                 if x_list[l] >= w:
                                     x_list[l] = w-1
-                                #  self.append_coco.emit(x_list[j])
+
                             for k in range(len(y_list)):
                                 if y_list[k] >=h:
                                     y_list[k] = h-1
-                            #self.append_coco.emit(y_list[k])
+
+                            # os.remove(self.coco_path+"/"+zips[j])
+                            # roi_obj = ROIPolygon(x_list, y_list)
+                            # with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
+                            #     roi.write()
+                            # with ZipFile(self.coco_path+"/"+zips[j], 'a') as myzip:
+                            #     myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                            #     self.append_coco.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                            # os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+
                             # parameters
                             # x_list.append(int(a["x"][0]/4))
                             # y_list.append(int(a["y"][0]/4))

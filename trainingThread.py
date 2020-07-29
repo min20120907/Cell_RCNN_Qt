@@ -40,6 +40,7 @@ import io
 from os.path import dirname
 import json
 import threading
+from solve_cudnn_error import *
 
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
@@ -56,6 +57,7 @@ class trainingThread(QtCore.QThread):
     update_training_status = QtCore.pyqtSignal(str)
 
     def run(self):
+        solve_cudnn_error()
         self.update_training_status.emit("Training started!")
         print("started input stream")
         # Root directory of the project
@@ -177,12 +179,16 @@ class trainingThread(QtCore.QThread):
                 # Convert polygons to a bitmap mask of shape
                 # [height, width, instance_count]
                 info = self.image_info[image_id]
+                # print(info)
                 mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
                                 dtype=np.uint8)
                 for i, p in enumerate(info["polygons"]):
                     # Get indexes of pixels inside the polygon and set them to 1
                     rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-                    mask[rr, cc, i] = 1
+                    try:
+                        mask[rr, cc, i] = 1
+                    except IndexError:
+                        print("Index Error")
 
                 # Return mask, and array of class IDs of each instance. Since we have
                 # one class ID only, we return an array of 1s
@@ -218,6 +224,7 @@ class trainingThread(QtCore.QThread):
                         learning_rate=config.LEARNING_RATE,
                         epochs=int(self.steps),
                         layers='heads')
+            gc.collect()
 
         ############################################################
         #  Training

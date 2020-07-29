@@ -71,7 +71,7 @@ p, li { white-space: pre-wrap; }
      </rect>
     </property>
     <property name="text">
-     <string>Traning Epochs: </string>
+     <string>Traning Steps: </string>
     </property>
    </widget>
    <widget class="QTextEdit" name="epochs">
@@ -382,7 +382,7 @@ p, li { white-space: pre-wrap; }
      </rect>
     </property>
     <property name="text">
-     <string>Traning Steps: </string>
+     <string>Traning Epochs: </string>
     </property>
    </widget>
    <widget class="QTextEdit" name="steps">

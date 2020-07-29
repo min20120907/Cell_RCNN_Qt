@@ -156,7 +156,7 @@ class Ui_MainWindow(object):
 "</style></head><body style=\" font-family:\'Ubuntu\'; font-size:11pt; font-weight:400; font-style:normal;\">\n"
 "<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">0.9</p></body></html>"))
         self.label.setText(_translate("MainWindow", "Confidence Rate: "))
-        self.label_2.setText(_translate("MainWindow", "Traning Epochs: "))
+        self.label_2.setText(_translate("MainWindow", "Traning Steps: "))
         self.epochs.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
@@ -189,7 +189,7 @@ class Ui_MainWindow(object):
 "<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">train</p></body></html>"))
         self.l_profile.setText(_translate("MainWindow", "Load Profile"))
         self.s_profile.setText(_translate("MainWindow", "Save Profile"))
-        self.label_5.setText(_translate("MainWindow", "Traning Steps: "))
+        self.label_5.setText(_translate("MainWindow", "Traning Epochs: "))
         self.steps.setHtml(_translate("MainWindow", "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n"
 "<html><head><meta name=\"qrichtext\" content=\"1\" /><style type=\"text/css\">\n"
 "p, li { white-space: pre-wrap; }\n"
