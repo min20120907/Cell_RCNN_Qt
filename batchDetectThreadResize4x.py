@@ -46,7 +46,7 @@ config.gpu_options.allow_growth = True
 session = tf.compat.v1.InteractiveSession(config=config)
 	
 
-class batchDetectThread(QtCore.QThread):
+class batchDetectThreadResize4x(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(batchDetectThread, self).__init__(parent)
         self.DETECT_PATH=DETECT_PATH
@@ -151,27 +151,39 @@ class batchDetectThread(QtCore.QThread):
                     self.append.emit("files: "+str(filenames))
                     self.progressBar.emit(j)
                     image = skimage.io.imread(os.path.join(filenames[j]))
+                    h, w, c = image.shape
+                    dim_o = (h,w)
+                    h= int(h*4)
+                    w= int(w*4)
+                    dim = (h,w) # new size with 4x increased
+                    resized = cv2.resize(image, dim, interpolation = cv2.INTER_AREA)
+                    cv2.imwrite(os.path.join(filenames[j]), resized)
                     # Run object detection
                     results = model.detect([image], verbose=0)
                     r = results[0]
                     data = numpy.array(r['masks'], dtype=numpy.bool)
                     # self.append.emit(data.shape)
                     edges = []
+
                     for a in range(len(r['masks'][0][0])):
                     
                         # self.append.emit(data.shape)
                         # data[0:256, 0:256] = [255, 0, 0] # red patch in upper left
+
                         mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
-                        # print("mask shape: ", mask.shape)
+                        print("image shape: ", mask.shape)
                         img = Image.fromarray(mask, 'L')
-                        print("mask shape: ", np.array(img).shape)
+
                         g = cv2.Canny(np.array(img),10,100)
                         contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+                        resized = cv2.resize(image, dim_o, interpolation = cv2.INTER_AREA)
+                        cv2.imwrite(os.path.join(filenames[j], resized))
                         self.progressBar.emit(j)
+
                         for contour in contours:
                             file_sum+=1
-                            x = [i[0][0] for i in contour]
-                            y = [i[0][1] for i in contour]
+                            x = [i[0][0]/4 for i in contour]
+                            y = [i[0][1]/4 for i in contour]
                             if(len(x)>=100):
                                 roi_obj = ROIPolygon(x, y)
                                 with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
@@ -180,3 +192,4 @@ class batchDetectThread(QtCore.QThread):
                                     myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                     self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                 os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+

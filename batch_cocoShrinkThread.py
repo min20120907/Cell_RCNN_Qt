@@ -83,11 +83,13 @@ class batch_sncThread(QtCore.QThread):
                 filename = filenames[i].replace("./", "")
                 im = cv2.imread(self.coco_path+'/'+filename)
                 h, w, c = im.shape
+                dim_o = (h,w)
                 h= int(h/4)
                 w= int(w/4)
-                dim = (w,h)
+                dim = (h,w)
                 resized = cv2.resize(im, dim, interpolation = cv2.INTER_AREA)
-                cv2.imwrite(self.coco_path+'/'+filename, resized)
+                resized_2 = cv2.resize(resized, dim_o, interpolation = cv2.INTER_AREA)
+                cv2.imwrite(self.coco_path+'/'+filename, resized_2)
                 size = os.path.getsize(self.coco_path+'/'+filename)
                 try:
                     f = open(json_name)
@@ -157,13 +159,13 @@ class batch_sncThread(QtCore.QThread):
                             # x_list.append(int(a["x"][0]/4))
                             # y_list.append(int(a["y"][0]/4))
                             regions = {
-                                str(a): {
+                                a['position']: {
                                     "shape_attributes": {
                                         "name": "polygon",
                                         "all_points_x": x_list,
                                         "all_points_y": y_list,
                                     },
-                                    "region_attributes": {"name": dirname(folder)},
+                                    "region_attributes": {"name": "cell"},
                                 }
                             }
                             data[filename + str(size)]["regions"].update(regions)
@@ -217,13 +219,13 @@ class batch_sncThread(QtCore.QThread):
                                         "all_points_y": new_y_list
                                     },
                                     "region_attributes": {
-                                        "name": dirname(folder)
+                                        "name": "cell"
                                     }
                                 }
                             }
                             data[filename + str(size)]["regions"].update(regions)
                             original.update(data)
-                        elif a['type']=="oval":
+                        elif a['position']=="oval":
                             TWO_PI=np.pi*2
                             angles = 128
                             angle_shift = TWO_PI/ angles
@@ -237,13 +239,13 @@ class batch_sncThread(QtCore.QThread):
                                 x_list.append(int(center_x + (a['width'] * np.cos(phi)/2)))
                                 y_list.append(int(center_y + (a['height'] * np.sin(phi)/2)))
                             regions = {
-                                str(a): {
+                                a['name']: {
                                     "shape_attributes": {
                                         "name": "polygon",
                                         "all_points_x": x_list,
                                         "all_points_y": y_list,
                                     },
-                                    "region_attributes": {"name": dirname(folder)},
+                                    "region_attributes": {"name": "cell"},
                                 }
 
                             }
@@ -315,12 +317,14 @@ class batch_sncThread(QtCore.QThread):
                 j=1
         result = {}
         self.append_coco.emit("Combining...")
+        err=0
         for f in glob.glob("*.json"):
             with open(f, "r") as infile:
                 try:
                     result.update(json.load(infile))
                 except ValueError:
-                    print("Decode error, passed")
+                    err+=1
+                    print("Decode error, passed, error: ", err)
                 infile.close()
         with open("via_region_data.json", "w") as outfile:
              json.dump(result, outfile, sort_keys=True, indent=4)
@@ -328,6 +332,7 @@ class batch_sncThread(QtCore.QThread):
         self.progressBar.emit(i)
         self.append_coco.emit("---CONVERT ENDED----")
         self.append_coco.emit("---" + str(time.time() - start_time)+"secs ----")
+        self.append_coco.emit("---" + str(err) +" errors ----")
 
 
 
