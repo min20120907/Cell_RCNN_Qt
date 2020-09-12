@@ -41,6 +41,9 @@ from os.path import dirname
 import json
 import threading
 import tensorflow as tf 
+import csv
+
+
 config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
 session = tf.compat.v1.InteractiveSession(config=config)
@@ -157,6 +160,7 @@ class batchDetectThread(QtCore.QThread):
                     data = numpy.array(r['masks'], dtype=numpy.bool)
                     # self.append.emit(data.shape)
                     edges = []
+                    RG_result = []
                     for a in range(len(r['masks'][0][0])):
                     
                         # self.append.emit(data.shape)
@@ -164,9 +168,27 @@ class batchDetectThread(QtCore.QThread):
                         mask = (numpy.array(r['masks'][:, :, a]*255)).astype(numpy.uint8)
                         # print("mask shape: ", mask.shape)
                         img = Image.fromarray(mask, 'L')
-                        print("mask shape: ", np.array(img).shape)
+                        # print("mask shape: ", np.array(img).shape)
+                        # print(set(mask.flatten()))
+                        # print(mask.shape)
+                        # print(image.shape)
                         g = cv2.Canny(np.array(img),10,100)
                         contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        R_channel = 0
+                        G_channel = 0
+                        R_img = image[:,:,0]
+                        G_img = image[:,:,1]
+                        # print(R_img.shape)
+                        # print(G_img.shape)
+
+                        for iii in range(len(mask)):
+                            for jjj in range(len(mask[0])):
+                                R_channel += (mask[iii][jjj]/255) * R_img[iii][jjj]
+                                G_channel += (mask[iii][jjj]/255) * G_img[iii][jjj]
+                        
+                        RG_result.append([R_channel, G_channel])
+                        
                         self.progressBar.emit(j)
                         for contour in contours:
                             file_sum+=1
@@ -180,3 +202,4 @@ class batchDetectThread(QtCore.QThread):
                                     myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                     self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                                 os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+                

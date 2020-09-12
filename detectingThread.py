@@ -36,7 +36,7 @@ import io
 from os.path import dirname
 import json
 import threading
-
+import csv
 class detectingThread(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(detectingThread, self).__init__(parent)
@@ -134,6 +134,7 @@ class detectingThread(QtCore.QThread):
         filenames.sort()
         file_sum=0
         self.append.emit(str(np.array(filenames)))
+        RG_result = []
         for j in range(len(filenames)):
             self.progressBar.emit(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
@@ -145,6 +146,7 @@ class detectingThread(QtCore.QThread):
             data = numpy.array(r['masks'], dtype=numpy.bool)
             # self.append.emit(data.shape)
             edges = []
+            
             for a in range(len(r['masks'][0][0])):
 
                 # self.append.emit(data.shape)
@@ -154,6 +156,19 @@ class detectingThread(QtCore.QThread):
                 g = cv2.Canny(np.array(img),10,100)
                 contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
                 self.progressBar.emit(j)
+                #print(len(contours))
+                R_channel = 0
+                G_channel = 0
+                R_img = image[:,:,0]
+                G_img = image[:,:,1]
+                # print(R_img.shape)
+                # print(G_img.shape)
+                for iii in range(len(mask)):
+                    for jjj in range(len(mask[0])):
+                        R_channel += int(mask[iii][jjj]/255) * R_img[iii][jjj]
+                        G_channel += int(mask[iii][jjj]/255) * G_img[iii][jjj]
+                RG_result.append([R_channel,G_channel])
+                print([R_channel,G_channel])
                 for contour in contours:
                     file_sum+=1
 
@@ -167,3 +182,8 @@ class detectingThread(QtCore.QThread):
                             myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                             self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
                         os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
+            with open('output.csv', 'w', newline='') as csvfile:
+                # 建立 CSV 檔寫入器
+                writer = csv.writer(csvfile)
+                writer.writerow(["Red","Green"])
+                writer.writerows(RG_result)
