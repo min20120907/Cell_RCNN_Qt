@@ -282,13 +282,19 @@ class batch_cocoThread(QtCore.QThread):
                     p.join()
                 j=1
         result = {}
+        sleep(2)
         self.append_coco.emit("Combining...")
+        err = 0
         for f in glob.glob("*.json"):
             with open(f, "r") as infile:
-                result.update(json.load(infile))
+                try:
+                    result.update(json.load(infile))
+                except ValueError:
+                    err+=1
+                    print("Decode error, passed, error: ", err)
                 infile.close()
         with open("via_region_data.json", "w") as outfile:
-             json.dump(result, outfile)
+             json.dump(result, outfile, sort_keys=True, indent=4)
              outfile.close()
         self.progressBar.emit(i)
         self.append_coco.emit("---CONVERT ENDED----")
