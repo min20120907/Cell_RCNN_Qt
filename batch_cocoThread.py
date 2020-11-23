@@ -1,3 +1,4 @@
+
 import subprocess
 import os
 import struct
@@ -33,7 +34,7 @@ import json
 import read_roi
 import io
 from os.path import dirname
-import json
+from json import JSONDecodeError
 from shutil import copyfile
 from sympy import Symbol
 from math import sqrt
@@ -228,8 +229,22 @@ class batch_cocoThread(QtCore.QThread):
                     f.close()
         print("Converted File: ", json_name)
         
-            
-        
+    def combine(self,i,start_time):
+        result = {}
+        for f in glob.glob("*.json"):
+            try:
+                with open(f, "r") as infile:
+                    result.update(json.load(infile))
+                    infile.close()
+            except JSONDecodeError:
+                print("A Decoding Error occur during converting file: "+ str(f))
+        self.append_coco.emit("Combining...")
+        with open("via_region_data.json", "w") as outfile:
+             json.dump(result, outfile)
+             outfile.close()
+        self.progressBar.emit(i)
+        self.append_coco.emit("---CONVERT ENDED----")
+        self.append_coco.emit("---" + str(time.time() - start_time)+"secs ----")
     def run(self):
         
         os.chdir(self.coco_path)
@@ -272,41 +287,19 @@ class batch_cocoThread(QtCore.QThread):
         self.progressBar_setMaximum.emit(i)
         start_time = time.time()
         k=0
-        for p in procs:
+        try:
+            for p in procs:
+                p.start()
+                j+=1
+                k+=1
+                self.progressBar.emit(k)
+                if j > 32:
+                    for i in range(32):
+                        p.join()
+                    j=1
+        finally:
+            p = Process(target=self.combine, args=(i,start_time))
             p.start()
-            j+=1
-            k+=1
-            self.progressBar.emit(k)
-            if j > 8:
-                for i in range(8):
-                    p.join()
-                j=1
-        result = {}
-        sleep(2)
-        self.append_coco.emit("Combining...")
-        err = 0
-        for f in glob.glob("*.json"):
-            with open(f, "r") as infile:
-                try:
-                    result.update(json.load(infile))
-                except ValueError:
-                    err+=1
-                    print("Decode error, passed, error: ", err)
-                infile.close()
-        with open("via_region_data.json", "w") as outfile:
-             json.dump(result, outfile, sort_keys=True, indent=4)
-             outfile.close()
-        self.progressBar.emit(i)
-        self.append_coco.emit("---CONVERT ENDED----")
-        self.append_coco.emit("---" + str(time.time() - start_time)+"secs ----")
-                
-                
-        
-                    
-        
-        
-                        
-        
-                        
-        
+            p.join()
 
+            
