@@ -1,4 +1,6 @@
 numpy
+mlrose
+sympy
 scipy
 Pillow
 cython
