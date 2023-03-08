@@ -77,21 +77,6 @@ class detectingThread(QtCore.QThread):
         DEVICE =self.DEVICE
         config = cell.CustomConfig()
 
-        # Override the training configurations with a few
-        # changes for inferencing.
-        def parseInt(a):
-            filenum=""
-            if int(a) >= 100 and int(a) < 1000:
-                filenum = "0" + str(a)
-            elif int(a) >= 10 and int(a) < 100:
-                filenum = "00" + str(a)
-            elif int(a) >= 1 and int(a) < 10:
-                filenum = "000" + str(a)
-            elif int(a) >= 1000 and int(a) < 10000:
-                 filenum = str(a)
-            else:
-                filenum="0000"
-            return filenum
         class InferenceConfig(config.__class__):
             # Run detection on one image at a time
             GPU_COUNT = 1
@@ -136,10 +121,16 @@ class detectingThread(QtCore.QThread):
         self.append.emit(str(np.array(filenames)))
         RG_result = []
         for j in range(len(filenames)):
-            self.progressBar.emit(j)
+            self.progressBar.emit((j + 1) * 100 // len(filenames))
             image = skimage.io.imread(os.path.join(filenames[j]))
+            # R_img = image[:,:,0]
+            # G_img = image[:,:,1]
             # Run object detection
-            results = model.detect([image], verbose=0)
+            try:
+                image2 = cv2.cvtColor(image,cv2. COLOR_GRAY2RGB)
+                results = model.detect([image2], verbose=0)
+            except:
+                results = model.detect([image], verbose=0)
 
             r = results[0]
 
@@ -157,33 +148,33 @@ class detectingThread(QtCore.QThread):
                 contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
                 self.progressBar.emit(j)
                 #print(len(contours))
-                R_channel = 0
-                G_channel = 0
-                R_img = image[:,:,0]
-                G_img = image[:,:,1]
+                # R_channel = 0
+                # G_channel = 0
+                
                 # print(R_img.shape)
                 # print(G_img.shape)
-                for iii in range(len(mask)):
-                    for jjj in range(len(mask[0])):
-                        R_channel += int(mask[iii][jjj]/255) * R_img[iii][jjj]
-                        G_channel += int(mask[iii][jjj]/255) * G_img[iii][jjj]
-                RG_result.append([R_channel,G_channel])
-                print([R_channel,G_channel])
+                # for iii in range(len(mask)):
+                #    for jjj in range(len(mask[0])):
+                #        R_channel += int(mask[iii][jjj]/255) * R_img[iii][jjj]
+                #        G_channel += int(mask[iii][jjj]/255) * G_img[iii][jjj]
+                # RG_result.append([R_channel,G_channel])
+                # print([R_channel,G_channel])
+                roi_count = 0
                 for contour in contours:
                     file_sum+=1
-
                     x = [i[0][0] for i in contour]
                     y = [i[0][1] for i in contour]
-                    if(len(x)>=100):
-                        roi_obj = ROIPolygon(x, y)
-                        with ROIEncoder(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi", roi_obj) as roi:
-                            roi.write()
-                        with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
-                            myzip.write(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                            self.append.emit("Compressed "+parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-                        os.remove(parseInt(j+1)+"-"+parseInt(file_sum)+"-0000"+".roi")
-            with open('output.csv', 'w', newline='') as csvfile:
+                    roi_count += 1
+                    filename = '{:04d}-{:04d}-{:04d}.roi'.format(j+1, file_sum, roi_count)
+                    roi_obj = ROIPolygon(x, y)
+                    with ROIEncoder(filename, roi_obj) as roi:
+                        roi.write()
+                    with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                        myzip.write(filename)
+                        self.append.emit("Compressed " + filename)
+                    os.remove(filename)
+                # with open(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".csv", 'w', newline='') as csvfile:
                 # 建立 CSV 檔寫入器
-                writer = csv.writer(csvfile)
-                writer.writerow(["Red","Green"])
-                writer.writerows(RG_result)
+                #  writer = csv.writer(csvfile)
+                #  writer.writerow(["Red","Green"])
+                #  writer.writerows(RG_result)

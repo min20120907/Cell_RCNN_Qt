@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import skimage.io
 import codecs
+import imgaug.augmenters as iaa
 from zipfile import ZipFile
 from PymageJ.roi import ROIEncoder, ROIRect, ROIPolygon
 import glob
@@ -40,8 +41,16 @@ import io
 from os.path import dirname
 import json
 import threading
-from solve_cudnn_error import *
+import tensorflow.keras as keras
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+# 在程序中使用 keras 模块
+
+from solve_cudnn_error import *
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+import warnings
+warnings.filterwarnings("ignore", message="Operation .* was changed by setting attribute after it was run by a session")
+warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):
@@ -89,10 +98,10 @@ class trainingThread(QtCore.QThread):
 
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 1
-
+            IMAGES_PER_GPU = 4
+#            GPU_COUNT = 2
             # Number of classes (including background)
-            NUM_CLASSES = 1 + 1 # Background + toy
+            NUM_CLASSES = 1 + 1 # Background + cell
 
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
@@ -156,7 +165,7 @@ class trainingThread(QtCore.QThread):
                     image_path = os.path.join(dataset_dir, a['filename'])
                     image = skimage.io.imread(image_path)
                     height, width = image.shape[:2]
-
+                    
                     self.add_image(
                         "cell",  ## for a single class just add the name here
                         image_id=a['filename'],  # use file name as a unique image id
@@ -223,9 +232,25 @@ class trainingThread(QtCore.QThread):
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
                         epochs=int(self.steps),
-                        layers='heads')
-            gc.collect()
-
+                        layers='heads',
+                        augmentation = iaa.Sometimes(5/6, iaa.OneOf([
+                        iaa.Fliplr(1),
+                        iaa.Flipud(1),
+                        iaa.Affine(rotate=(-45, 45)),
+                        iaa.Affine(rotate=(-90, 90)),
+                        iaa.Affine(scale=(0.5, 1.5))
+                        ]))
+                        )
+            #gc.collect()
+        '''
+	augmentation = iaa.Sometimes(5/6, iaa.OneOf([
+                        iaa.Fliplr(1),
+                        iaa.Flipud(1),
+                        iaa.Affine(rotate=(-45, 45)),
+                        iaa.Affine(rotate=(-90, 90)),
+                        iaa.Affine(scale=(0.5, 1.5))
+                        ]))
+        '''
         ############################################################
         #  Training
         ############################################################
