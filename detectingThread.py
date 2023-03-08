@@ -121,7 +121,7 @@ class detectingThread(QtCore.QThread):
         self.append.emit(str(np.array(filenames)))
         RG_result = []
         for j in range(len(filenames)):
-            self.progressBar.emit((j + 1) * 100 // len(filenames))
+            self.progressBar.emit(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
             # R_img = image[:,:,0]
             # G_img = image[:,:,1]
@@ -173,6 +173,8 @@ class detectingThread(QtCore.QThread):
                         myzip.write(filename)
                         self.append.emit("Compressed " + filename)
                     os.remove(filename)
+            file_sum=0
+        self.progressBar.emit(len(filenames))
                 # with open(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".csv", 'w', newline='') as csvfile:
                 # 建立 CSV 檔寫入器
                 #  writer = csv.writer(csvfile)
