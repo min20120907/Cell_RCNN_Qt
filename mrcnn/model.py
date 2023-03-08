@@ -2157,9 +2157,9 @@ class MaskRCNN(object):
         metrics. Then calls the Keras compile() function.
         """
         # Optimizer object
-        optimizer = keras.optimizers.SGD(
-            lr=learning_rate, momentum=momentum,
-            clipnorm=self.config.GRADIENT_CLIP_NORM)
+        optimizer = tf.compat.v1.train.MomentumOptimizer(
+            learning_rate=learning_rate, momentum=momentum)
+
         # Add Losses
         loss_names = [
             "rpn_class_loss",  "rpn_bbox_loss",
@@ -2797,6 +2797,8 @@ def mold_image(images, config):
     the mean pixel and converts it to float. Expects image
     colors in RGB order.
     """
+    if images.shape[-1] is 4:
+        images = images[..., :3]
     return images.astype(np.float32) - config.MEAN_PIXEL
 
 
