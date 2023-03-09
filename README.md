@@ -25,3 +25,14 @@ Please remove the qt library from `opencv-python` by:
 ```
 rm -rf $PYTHON_PATH/lib/python3.10/site-packages/cv2/qt/
 ```
+
+If you run this within 4K or higher resolution, you can type this environment variables:
+```
+QT_FONT_DPI=96 QT_SCALE_FACTOR=2
+```
+
+If Segmentation fault occurs, please also type this environment variable:
+```
+LD_PRELOAD="/usr/lib/libtcmalloc_minimal.so.4"
+```
+
