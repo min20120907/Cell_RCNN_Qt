@@ -33,6 +33,6 @@ QT_FONT_DPI=96 QT_SCALE_FACTOR=2
 
 If Segmentation fault occurs, please also type this environment variable:
 ```
-LD_PRELOAD="/usr/lib/libtcmalloc_minimal.so.4"
+LD_PRELOAD="/usr/lib-linux-gnu/libtcmalloc_minimal.so.4"
 ```
 
