@@ -36,3 +36,4 @@ If Segmentation fault occurs, please also type this environment variable:
 LD_PRELOAD="/usr/lib-linux-gnu/libtcmalloc_minimal.so.4"
 ```
 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
