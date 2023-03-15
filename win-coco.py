@@ -38,8 +38,10 @@ from shutil import copyfile
 from sympy import Symbol
 from math import sqrt
 from sympy.solvers import solve
-from multiprocessing import Process, freeze_support, Lock
+from multiprocessing import Process, freeze_support, Lock, Pool
 import time
+from itertools import product
+from tqdm import tqdm
 coco_path=sys.argv[1]
 txt=sys.argv[2]
 def run_func(zips,filenames,json_name,folder):
@@ -52,8 +54,8 @@ def run_func(zips,filenames,json_name,folder):
     # looping and decoding...
     #print(zips)
 
-    for j in range(len(zips)):
-        for i in range(len(filenames)):
+    for j in tqdm(range(len(zips))):
+        for i in tqdm(range(len(filenames))):
             
             count2+=1
             # declare ROI file
@@ -235,6 +237,10 @@ if __name__ == "__main__":
     i=1
     j=1
     procs=[]
+    args1=[]
+    args2=[]
+    args3=[]
+    args4=[]
     for d in os.walk(path):
         for folder in d[1]:
             
@@ -250,30 +256,39 @@ if __name__ == "__main__":
                 freeze_support()
                 p = Process(target=run_func, args=(zips,filenames,"via_region_data_part_"+str(i)+".json",folder))                    
                 procs.append(p)
+                args1.append((zips,filenames,"via_region_data_part_"+str(i)+".json",folder))
                 i+=1
     print("Scanning completed! i="+str(i))
     print(i)
     start_time = time.time()
     k=0
-    
-    for p in procs:
-        freeze_support()
-        p.start()
-        j+=1
+    with Pool(processes=32) as pool:
+        pool.starmap(run_func, args1)
         k+=1
-        if j > 40:
-            for a in range(40):
-                p.join()
-            j=1
+    #for p in procs:
+     #   freeze_support()
+      #  p.start()
+        #j+=1
+        #k+=1
+        #if j % 40 == 1:
+         #   for a in range(40):
+          #      p.join()
+           # j=1
     result = {}
     print("Combining...")
     
     for f in glob.glob("*.json"):
         with open(f, "r") as infile:
-            result.update(json.load(infile))
+            try:
+                result.update(json.load(infile))
+            except:
+                pass
             infile.close()
     with open("via_region_data.json", "w") as outfile:
-         json.dump(result, outfile)
-         outfile.close()
+        try:
+            json.dump(result, outfile)
+        except:
+            pass
+        outfile.close()
     print("---CONVERT ENDED----")
     print("---" + str(time.time() - start_time)+"secs ----")
