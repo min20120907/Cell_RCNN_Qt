@@ -37,6 +37,9 @@ from os.path import dirname
 import json
 import threading
 import csv
+from datetime import datetime
+now = datetime.now()
+formatted_date_time = now.strftime("%m/%d/%Y %H:%M:%S")
 class detectingThread(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(detectingThread, self).__init__(parent)
@@ -167,9 +170,10 @@ class detectingThread(QtCore.QThread):
                     roi_count += 1
                     filename = '{:04d}-{:04d}-{:04d}.roi'.format(j+1, file_sum, roi_count)
                     roi_obj = ROIPolygon(x, y)
+                    
                     with ROIEncoder(filename, roi_obj) as roi:
                         roi.write()
-                    with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                    with ZipFile(self.ROI_PATH+"/"+f"[{formatted_date_time}] "+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
                         myzip.write(filename)
                         self.append.emit("Compressed " + filename)
                     os.remove(filename)
