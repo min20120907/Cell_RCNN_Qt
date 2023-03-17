@@ -98,11 +98,11 @@ class trainingThread(QtCore.QThread):
 
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 4
+            IMAGES_PER_GPU = 2
 #            GPU_COUNT = 2
             # Number of classes (including background)
-            NUM_CLASSES = 1 + 1 # Background + cell
-
+            NUM_CLASSES = 1 + 2 # Background + cell + chromosome
+            # NUM_CLASSES = 1 + 1 # Background + cell
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
 
@@ -123,6 +123,7 @@ class trainingThread(QtCore.QThread):
                 """
                 # Add classes. We have only one class to add.
                 self.add_class("cell", 1, "cell")
+                self.add_class("chromosome", 2, "chromosome")
 
                 # Train or validation dataset?
                 assert subset in ["train", "val"]
@@ -144,9 +145,9 @@ class trainingThread(QtCore.QThread):
                 # }
                 # We mostly care about the x and y coordinates of each region
                 annotations1 = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
-                # self.update_training_status.emit(annotations1)
+                annotations2 = json.load(open(os.path.join(dataset_dir, "via_region_chromosome.json")))
                 annotations = list(annotations1.values())  # don't need the dict keys
-
+                annotations += list(annotations2.values())
                 # The VIA tool saves images in the JSON even if they don't have any
                 # annotations. Skip unannotated images.
                 annotations = [a for a in annotations if a['regions']]
@@ -172,44 +173,48 @@ class trainingThread(QtCore.QThread):
                         path=image_path,
                         width=width, height=height,
                         polygons=polygons)
-
+                    self.add_image(
+                        "chromosome",  ## for a single class just add the name here
+                        image_id=a['filename'],  # use file name as a unique image id
+                        path=image_path,
+                        width=width, height=height,
+                        polygons=polygons)
+                    
             def load_mask(self, image_id):
-                """Generate instance masks for an image.
-               Returns:
+                """
+                Generate instance masks for an image.
+                Returns:
                 masks: A bool array of shape [height, width, instance count] with
-                    one mask per instance.
+                one mask per instance.
                 class_ids: a 1D array of class IDs of the instance masks.
                 """
-                # If not a balloon dataset image, delegate to parent class.
-                image_info = self.image_info[image_id]
-                if image_info["source"] != "cell":
-                    return super(self.__class__, self).load_mask(image_id)
-
-                # Convert polygons to a bitmap mask of shape
-                # [height, width, instance_count]
+                # Get image info
                 info = self.image_info[image_id]
-                # print(info)
-                mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                                dtype=np.uint8)
+                # Check if this image is from this dataset or not
+                if info["source"] not in self.class_info:
+                     return super().load_mask(image_id)
+
+                # Convert polygons to a bitmap mask of shape [height, width, instance_count]
+                mask = np.zeros([info["height"], info["width"], len(info["polygons"])], dtype=np.uint8)
                 for i, p in enumerate(info["polygons"]):
-                    # Get indexes of pixels inside the polygon and set them to 1
                     rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
                     try:
                         mask[rr, cc, i] = 1
                     except IndexError:
                         print("Index Error")
 
-                # Return mask, and array of class IDs of each instance. Since we have
-                # one class ID only, we return an array of 1s
-                return mask, np.ones([mask.shape[-1]], dtype=np.int32)
+                # Get class_ids list for this image
+                class_ids = []
+                for i, class_info in enumerate(self.class_info.values()):
+                    if class_info["name"] == info["source"]:
+                        class_ids.append(i + 1)
 
+                return mask, np.array(class_ids, dtype=np.int32)
             def image_reference(self, image_id):
                 """Return the path of the image."""
                 info = self.image_info[image_id]
-                if info["source"] == "cell":
-                    return info["path"]
-                else:
-                    super(self.__class__, self).image_reference(image_id)
+                if info["source"] != "cell":
+                    return super(self.__class__, self).load_mask(image_id)
 
 
         def train(model):
@@ -228,17 +233,25 @@ class trainingThread(QtCore.QThread):
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
             # no need to train all layers, just the heads should do it.
-            self.update_training_status.emit("Training network heads")
+            self.update_training_status.emit("Training network all")
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
                         epochs=int(self.steps),
-                        layers='heads',
+                        layers='all',
                         augmentation = iaa.Sometimes(5/6, iaa.OneOf([
                         iaa.Fliplr(1),
                         iaa.Flipud(1),
                         iaa.Affine(rotate=(-45, 45)),
                         iaa.Affine(rotate=(-90, 90)),
-                        iaa.Affine(scale=(0.5, 1.5))
+                        iaa.Affine(scale=(0.5, 1.5)),
+                        iaa.Fliplr(0.5), # 左右翻轉概率為0.5
+                        iaa.Flipud(0.5), # 上下翻轉概率為0.5
+                        iaa.Affine(rotate=(-10, 10)), # 隨機旋轉-10°到10°
+                        iaa.Affine(scale=(0.8, 1.2)), # 隨機縮放80%-120%
+                        iaa.Crop(percent=(0, 0.1)), # 隨機裁剪，裁剪比例為0%-10%
+                        iaa.GaussianBlur(sigma=(0, 0.5)), # 高斯模糊，sigma值在0到0.5之間
+                        iaa.AdditiveGaussianNoise(scale=(0, 0.05*255)), # 添加高斯噪聲，噪聲標準差為0到0.05的像素值
+                        iaa.ContrastNormalization((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
                         ]))
                         )
             #gc.collect()

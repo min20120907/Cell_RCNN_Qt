@@ -39,7 +39,7 @@ import threading
 import csv
 from datetime import datetime
 now = datetime.now()
-formatted_date_time = now.strftime("%m/%d/%Y %H:%M:%S")
+formatted_date_time = now.strftime("%m-%d-%Y_%H-%M-%S")
 class detectingThread(QtCore.QThread):
     def __init__(self, parent=None, WORK_DIR = '',txt='', weight_path = '',dataset_path='',ROI_PATH='',DETECT_PATH='',DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(detectingThread, self).__init__(parent)
@@ -150,18 +150,7 @@ class detectingThread(QtCore.QThread):
                 g = cv2.Canny(np.array(img),10,100)
                 contours, hierarchy = cv2.findContours(mask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
                 self.progressBar.emit(j)
-                #print(len(contours))
-                # R_channel = 0
-                # G_channel = 0
                 
-                # print(R_img.shape)
-                # print(G_img.shape)
-                # for iii in range(len(mask)):
-                #    for jjj in range(len(mask[0])):
-                #        R_channel += int(mask[iii][jjj]/255) * R_img[iii][jjj]
-                #        G_channel += int(mask[iii][jjj]/255) * G_img[iii][jjj]
-                # RG_result.append([R_channel,G_channel])
-                # print([R_channel,G_channel])
                 roi_count = 0
                 for contour in contours:
                     file_sum+=1
@@ -173,7 +162,7 @@ class detectingThread(QtCore.QThread):
                     
                     with ROIEncoder(filename, roi_obj) as roi:
                         roi.write()
-                    with ZipFile(self.ROI_PATH+"/"+f"[{formatted_date_time}] "+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+".zip", 'a') as myzip:
+                    with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
                         myzip.write(filename)
                         self.append.emit("Compressed " + filename)
                     os.remove(filename)
