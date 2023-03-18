@@ -80,13 +80,13 @@ class detectingThread(QtCore.QThread):
         DEVICE =self.DEVICE
         config = cell.CustomConfig()
 
-        class InferenceConfig(config.__class__):
-            # Run detection on one image at a time
-            GPU_COUNT = 1
-            IMAGES_PER_GPU = 1
+        # class InferenceConfig(config.__class__):
+        #     # Run detection on one image at a time
+        #     GPU_COUNT = 1
+        #     IMAGES_PER_GPU = 4
 
 
-        config = InferenceConfig()
+        # config = InferenceConfig()
         config.display()
 
         # Device to load the neural network on.
@@ -122,7 +122,6 @@ class detectingThread(QtCore.QThread):
         filenames.sort()
         file_sum=0
         self.append.emit(str(np.array(filenames)))
-        RG_result = []
         for j in range(len(filenames)):
             self.progressBar.emit(j)
             image = skimage.io.imread(os.path.join(filenames[j]))
@@ -140,7 +139,7 @@ class detectingThread(QtCore.QThread):
             data = numpy.array(r['masks'], dtype=numpy.bool)
             # self.append.emit(data.shape)
             edges = []
-            
+            print("ROI class: ", r['class_ids'])
             for a in range(len(r['masks'][0][0])):
 
                 # self.append.emit(data.shape)

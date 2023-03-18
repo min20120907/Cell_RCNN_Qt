@@ -43,7 +43,6 @@ import json
 import threading
 import tensorflow.keras as keras
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
 # 在程序中使用 keras 模块
 
 from solve_cudnn_error import *
@@ -51,6 +50,14 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 import warnings
 warnings.filterwarnings("ignore", message="Operation .* was changed by setting attribute after it was run by a session")
 warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
+from multiprocessing import Pool, cpu_count
+
+def load_annotations(file_path):
+    """Load annotations from a single JSON file."""
+    annotations = json.load(open(file_path))
+    annotations = [a for a in list(annotations.values()) if a['regions']]
+    return annotations
+
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):
@@ -115,7 +122,7 @@ class trainingThread(QtCore.QThread):
         ############################################################
 
         class CustomDataset(utils.Dataset):
-        
+            
             def load_custom(self, dataset_dir, subset):
                 """Load a subset of the bottle dataset.
                 dataset_dir: Root directory of the dataset.
@@ -129,92 +136,70 @@ class trainingThread(QtCore.QThread):
                 assert subset in ["train", "val"]
                 dataset_dir = os.path.join(dataset_dir, subset)
 
-                # Load annotations
-                # VGG Image Annotator saves each image in the form:
-                # { 'filename': '28503151_5b5b7ec140_b.jpg',
-                #   'regions': {
-                #       '0': {
-                #           'region_attributes': {},
-                #           'shape_attributes': {
-                #               'all_points_x': [...],
-                #               'all_points_y': [...],
-                #               'name': 'polygon'}},
-                #       ... more regions ...
-                #   },
-                #   'size': 100202
-                # }
-                # We mostly care about the x and y coordinates of each region
-                annotations1 = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
-                annotations2 = json.load(open(os.path.join(dataset_dir, "via_region_chromosome.json")))
-                annotations = list(annotations1.values())  # don't need the dict keys
-                annotations += list(annotations2.values())
-                # The VIA tool saves images in the JSON even if they don't have any
-                # annotations. Skip unannotated images.
-                annotations = [a for a in annotations if a['regions']]
+                # Load annotations from all JSON files using multiprocessing
+                json_files = [os.path.join(dataset_dir, "via_region_data.json"), os.path.join(dataset_dir, "via_region_chromosome.json")]
+                with Pool(processes=cpu_count()) as p:
+                    annotations = p.map(load_annotations, json_files)
+                annotations = [a for sublist in annotations for a in sublist]
 
                 # Add images
                 for a in annotations:
-                    # self.update_training_status.emit(a)
-                    # Get the x, y coordinaets of points of the polygons that make up
-                    # the outline of each object instance. There are stores in the
-                    # shape_attributes (see json format above)
-                    polygons = [r['shape_attributes'] for r in a['regions'].values()]
+                    # Get the x, y coordinates of points of the polygons that make up
+                    # the outline of each object instance. These are stored in the
+                    # shape_attributes (see JSON format above)
+                    if type(a['regions']) is dict:
+                        polygons = [r['shape_attributes'] for r in a['regions'].values()]
+                    else:
+                        polygons = [r['shape_attributes'] for r in a['regions']]
 
                     # load_mask() needs the image size to convert polygons to masks.
                     # Unfortunately, VIA doesn't include it in JSON, so we must read
-                    # the image. This is only managable since the dataset is tiny.
+                    # the image. This is only manageable since the dataset is tiny.
                     image_path = os.path.join(dataset_dir, a['filename'])
                     image = skimage.io.imread(image_path)
                     height, width = image.shape[:2]
-                    
+
+                    if 'cell' in image_path:
+                        class_name = 'cell'
+                    else:
+                        class_name = 'chromosome'
+
                     self.add_image(
-                        "cell",  ## for a single class just add the name here
+                        class_name,
                         image_id=a['filename'],  # use file name as a unique image id
                         path=image_path,
                         width=width, height=height,
                         polygons=polygons)
-                    self.add_image(
-                        "chromosome",  ## for a single class just add the name here
-                        image_id=a['filename'],  # use file name as a unique image id
-                        path=image_path,
-                        width=width, height=height,
-                        polygons=polygons)
+            
                     
+
             def load_mask(self, image_id):
-                """
-                Generate instance masks for an image.
-                Returns:
+                """Generate instance masks for an image.
+               Returns:
                 masks: A bool array of shape [height, width, instance count] with
-                one mask per instance.
+                    one mask per instance.
                 class_ids: a 1D array of class IDs of the instance masks.
                 """
-                # Get image info
+                # If not a cell dataset image, delegate to parent class.
+                image_info = self.image_info[image_id]
+
+                # Convert polygons to a bitmap mask of shape
+                # [height, width, instance_count]
                 info = self.image_info[image_id]
-                # Check if this image is from this dataset or not
-                if info["source"] not in self.class_info:
-                     return super().load_mask(image_id)
-
-                # Convert polygons to a bitmap mask of shape [height, width, instance_count]
-                mask = np.zeros([info["height"], info["width"], len(info["polygons"])], dtype=np.uint8)
+                mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+                                dtype=np.uint8)
                 for i, p in enumerate(info["polygons"]):
+                    # Get indexes of pixels inside the polygon and set them to 1
                     rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-                    try:
-                        mask[rr, cc, i] = 1
-                    except IndexError:
-                        print("Index Error")
-
-                # Get class_ids list for this image
-                class_ids = []
-                for i, class_info in enumerate(self.class_info.values()):
-                    if class_info["name"] == info["source"]:
-                        class_ids.append(i + 1)
-
-                return mask, np.array(class_ids, dtype=np.int32)
+                    mask[rr, cc, i] = 1
+                # Return mask, and array of class IDs of each instance. Since we have
+                # one class ID only, we return an array of 1s
+                return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
             def image_reference(self, image_id):
                 """Return the path of the image."""
                 info = self.image_info[image_id]
-                if info["source"] != "cell":
-                    return super(self.__class__, self).load_mask(image_id)
+                return info["path"]
+
 
 
         def train(model):
@@ -222,11 +207,13 @@ class trainingThread(QtCore.QThread):
             # Training dataset.
             dataset_train = CustomDataset()
             dataset_train.load_custom(self.dataset_path,"train")
-            dataset_train.prepare()
 
+            dataset_train.prepare()
+            
             # Validation dataset
             dataset_val = CustomDataset()
             dataset_val.load_custom(self.dataset_path, "val")
+
             dataset_val.prepare()
 
             # *** This training schedule is an example. Update to your needs ***

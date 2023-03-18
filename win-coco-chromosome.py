@@ -157,7 +157,7 @@ def process_file(args):
                         },
                         "region_attributes": {
                              "name": dirname(folder),
-                             "class": "cell"},
+                             "class": "chromosome"},
                     }
                 
                 }
@@ -209,7 +209,7 @@ if __name__ == "__main__":
             except:
                 pass
 
-    with open("via_region_data.json", "w") as outfile:
+    with open("via_region_chromosome.json", "w") as outfile:
         try:
             json.dump(result, outfile)
         except:
