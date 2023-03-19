@@ -52,11 +52,7 @@ warnings.filterwarnings("ignore", message="Operation .* was changed by setting a
 warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 from multiprocessing import Pool, cpu_count
 
-def load_annotations(file_path):
-    """Load annotations from a single JSON file."""
-    annotations = json.load(open(file_path))
-    annotations = [a for a in list(annotations.values()) if a['regions']]
-    return annotations
+
 
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
@@ -130,28 +126,42 @@ class trainingThread(QtCore.QThread):
                 """
                 # Add classes. We have only one class to add.
                 self.add_class("cell", 1, "cell")
-                self.add_class("chromosome", 2, "chromosome")
+                self.add_class("cell", 2, "chromosome")
 
                 # Train or validation dataset?
                 assert subset in ["train", "val"]
                 dataset_dir = os.path.join(dataset_dir, subset)
 
                 # Load annotations from all JSON files using multiprocessing
-                json_files = [os.path.join(dataset_dir, "via_region_data.json"), os.path.join(dataset_dir, "via_region_chromosome.json")]
-                with Pool(processes=cpu_count()) as p:
-                    annotations = p.map(load_annotations, json_files)
-                annotations = [a for sublist in annotations for a in sublist]
+                annotations1 = json.load(open(os.path.join(dataset_dir,
+                                 'via_region_data.json')))
+                annotations1 = list(annotations1.values()) 
+                annotations1 = [a for a in annotations1 if a['regions']]
+
+                
+                # Load annotations from chromosome json
+                annotations2 = json.load(open(os.path.join(dataset_dir,
+                                 'via_region_chromosome.json')))
+                annotations2 = list(annotations2.values()) 
+                annotations2 = [a for a in annotations2 if a['regions']]
 
                 # Add images
-                for a in annotations:
+                for a in annotations1:
                     # Get the x, y coordinates of points of the polygons that make up
                     # the outline of each object instance. These are stored in the
                     # shape_attributes (see JSON format above)
                     if type(a['regions']) is dict:
                         polygons = [r['shape_attributes'] for r in a['regions'].values()]
+                        objects = [s['region_attributes'] for s in a['regions'].values()]
                     else:
                         polygons = [r['shape_attributes'] for r in a['regions']]
-
+                        objects = [s['region_attributes'] for s in a['regions']]
+                    num_ids = []
+                    for _ in objects:
+                        try:
+                            num_ids.append(1)
+                        except:
+                            pass
                     # load_mask() needs the image size to convert polygons to masks.
                     # Unfortunately, VIA doesn't include it in JSON, so we must read
                     # the image. This is only manageable since the dataset is tiny.
@@ -159,18 +169,44 @@ class trainingThread(QtCore.QThread):
                     image = skimage.io.imread(image_path)
                     height, width = image.shape[:2]
 
-                    if 'cell' in image_path:
-                        class_name = 'cell'
-                    else:
-                        class_name = 'chromosome'
-
                     self.add_image(
-                        class_name,
+                        'cell',
                         image_id=a['filename'],  # use file name as a unique image id
                         path=image_path,
                         width=width, height=height,
-                        polygons=polygons)
-            
+                        polygons=polygons,
+                        num_ids=num_ids)
+                
+                for a in annotations2:
+                    # Get the x, y coordinates of points of the polygons that make up
+                    # the outline of each object instance. These are stored in the
+                    # shape_attributes (see JSON format above)
+                    if type(a['regions']) is dict:
+                        polygons = [r['shape_attributes'] for r in a['regions'].values()]
+                        objects = [s['region_attributes'] for s in a['regions'].values()]
+                    else:
+                        polygons = [r['shape_attributes'] for r in a['regions']]
+                        objects = [s['region_attributes'] for s in a['regions']]
+                    num_ids = []
+                    for _ in objects:
+                        try:
+                            num_ids.append(2)
+                        except:
+                            pass
+                    # load_mask() needs the image size to convert polygons to masks.
+                    # Unfortunately, VIA doesn't include it in JSON, so we must read
+                    # the image. This is only manageable since the dataset is tiny.
+                    image_path = os.path.join(dataset_dir, a['filename'])
+                    image = skimage.io.imread(image_path)
+                    height, width = image.shape[:2]
+
+                    self.add_image(
+                        'cell',
+                        image_id=a['filename'],  # use file name as a unique image id
+                        path=image_path,
+                        width=width, height=height,
+                        polygons=polygons,
+                        num_ids=num_ids)
                     
 
             def load_mask(self, image_id):
@@ -194,7 +230,7 @@ class trainingThread(QtCore.QThread):
                     mask[rr, cc, i] = 1
                 # Return mask, and array of class IDs of each instance. Since we have
                 # one class ID only, we return an array of 1s
-                return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
+                return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
             def image_reference(self, image_id):
                 """Return the path of the image."""
                 info = self.image_info[image_id]
