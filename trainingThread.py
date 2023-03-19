@@ -1,3 +1,4 @@
+import multiprocessing
 import subprocess
 import os
 import struct
@@ -52,8 +53,48 @@ warnings.filterwarnings("ignore", message="Operation .* was changed by setting a
 warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 from multiprocessing import Pool, cpu_count
 
+def load_annotations(args):
+    annotation, subset_dir, class_id = args
+    # Load annotations from JSON file
+    annotations = json.load(open(os.path.join(subset_dir, annotation)))
+    annotations = list(annotations.values()) 
+    annotations = [a for a in annotations if a['regions']]
 
+    # Add images
+    images = []
+    for a in annotations:
+        # Get the x, y coordinates of points of the polygons that make up
+        # the outline of each object instance. These are stored in the
+        # shape_attributes (see JSON format above)
+        if type(a['regions']) is dict:
+            polygons = [r['shape_attributes'] for r in a['regions'].values()]
+            objects = [s['region_attributes'] for s in a['regions'].values()]
+        else:
+            polygons = [r['shape_attributes'] for r in a['regions']]
+            objects = [s['region_attributes'] for s in a['regions']]
+        num_ids = []
+        for _ in objects:
+            try:
+                num_ids.append(class_id)
+            except:
+                pass
+        # load_mask() needs the image size to convert polygons to masks.
+        # Unfortunately, VIA doesn't include it in JSON, so we must read
+        # the image. This is only manageable since the dataset is tiny.
+        image_path = os.path.join(subset_dir, a['filename'])
+        image = skimage.io.imread(image_path)
+        height, width = image.shape[:2]
 
+        images.append({
+            'image_id': a['filename'],  # use file name as a unique image id
+            'path': image_path,
+            'width': width,
+            'height': height,
+            'polygons': polygons,
+            'num_ids': num_ids
+        })
+
+    return images
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):
@@ -67,7 +108,7 @@ class trainingThread(QtCore.QThread):
         self.train_mode = train_mode
         self.steps = steps
     update_training_status = QtCore.pyqtSignal(str)
-
+    
     def run(self):
         solve_cudnn_error()
         self.update_training_status.emit("Training started!")
@@ -130,84 +171,28 @@ class trainingThread(QtCore.QThread):
 
                 # Train or validation dataset?
                 assert subset in ["train", "val"]
-                dataset_dir = os.path.join(dataset_dir, subset)
+                subset_dir = os.path.join(dataset_dir, subset)
 
                 # Load annotations from all JSON files using multiprocessing
-                annotations1 = json.load(open(os.path.join(dataset_dir,
-                                 'via_region_data.json')))
-                annotations1 = list(annotations1.values()) 
-                annotations1 = [a for a in annotations1 if a['regions']]
-
-                
-                # Load annotations from chromosome json
-                annotations2 = json.load(open(os.path.join(dataset_dir,
-                                 'via_region_chromosome.json')))
-                annotations2 = list(annotations2.values()) 
-                annotations2 = [a for a in annotations2 if a['regions']]
+                pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+                annotations1 = ['via_region_data.json']
+                annotations2 = ['via_region_chromosome.json']
+                regions = [(a, subset_dir, 1) for a in annotations1] + [(a, subset_dir, 2) for a in annotations2]
+                results = pool.map(load_annotations, regions)
+                pool.close()
+                pool.join()
 
                 # Add images
-                for a in annotations1:
-                    # Get the x, y coordinates of points of the polygons that make up
-                    # the outline of each object instance. These are stored in the
-                    # shape_attributes (see JSON format above)
-                    if type(a['regions']) is dict:
-                        polygons = [r['shape_attributes'] for r in a['regions'].values()]
-                        objects = [s['region_attributes'] for s in a['regions'].values()]
-                    else:
-                        polygons = [r['shape_attributes'] for r in a['regions']]
-                        objects = [s['region_attributes'] for s in a['regions']]
-                    num_ids = []
-                    for _ in objects:
-                        try:
-                            num_ids.append(1)
-                        except:
-                            pass
-                    # load_mask() needs the image size to convert polygons to masks.
-                    # Unfortunately, VIA doesn't include it in JSON, so we must read
-                    # the image. This is only manageable since the dataset is tiny.
-                    image_path = os.path.join(dataset_dir, a['filename'])
-                    image = skimage.io.imread(image_path)
-                    height, width = image.shape[:2]
-
-                    self.add_image(
-                        'cell',
-                        image_id=a['filename'],  # use file name as a unique image id
-                        path=image_path,
-                        width=width, height=height,
-                        polygons=polygons,
-                        num_ids=num_ids)
-                
-                for a in annotations2:
-                    # Get the x, y coordinates of points of the polygons that make up
-                    # the outline of each object instance. These are stored in the
-                    # shape_attributes (see JSON format above)
-                    if type(a['regions']) is dict:
-                        polygons = [r['shape_attributes'] for r in a['regions'].values()]
-                        objects = [s['region_attributes'] for s in a['regions'].values()]
-                    else:
-                        polygons = [r['shape_attributes'] for r in a['regions']]
-                        objects = [s['region_attributes'] for s in a['regions']]
-                    num_ids = []
-                    for _ in objects:
-                        try:
-                            num_ids.append(2)
-                        except:
-                            pass
-                    # load_mask() needs the image size to convert polygons to masks.
-                    # Unfortunately, VIA doesn't include it in JSON, so we must read
-                    # the image. This is only manageable since the dataset is tiny.
-                    image_path = os.path.join(dataset_dir, a['filename'])
-                    image = skimage.io.imread(image_path)
-                    height, width = image.shape[:2]
-
-                    self.add_image(
-                        'cell',
-                        image_id=a['filename'],  # use file name as a unique image id
-                        path=image_path,
-                        width=width, height=height,
-                        polygons=polygons,
-                        num_ids=num_ids)
-                    
+                for images in results:
+                    for image in images:
+                        self.add_image(
+                            'cell',
+                            image_id=image['image_id'],  # use file name as a unique image id
+                            path=image['path'],
+                            width=image['width'], height=image['height'],
+                            polygons=image['polygons'],
+                            num_ids=image['num_ids'])
+                            
 
             def load_mask(self, image_id):
                 """Generate instance masks for an image.

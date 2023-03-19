@@ -133,13 +133,13 @@ class detectingThread(QtCore.QThread):
                 results = model.detect([image2], verbose=0)
             except:
                 results = model.detect([image], verbose=0)
-
+            
             r = results[0]
-
+            print(r)
             data = numpy.array(r['masks'], dtype=numpy.bool)
             # self.append.emit(data.shape)
             edges = []
-            print("ROI class: ", r['class_ids'])
+            print("ROI class: ", r)
             for a in range(len(r['masks'][0][0])):
 
                 # self.append.emit(data.shape)
@@ -158,12 +158,17 @@ class detectingThread(QtCore.QThread):
                     roi_count += 1
                     filename = '{:04d}-{:04d}-{:04d}.roi'.format(j+1, file_sum, roi_count)
                     roi_obj = ROIPolygon(x, y)
-                    
+                    roi_class = r['class_ids'][a]
                     with ROIEncoder(filename, roi_obj) as roi:
                         roi.write()
-                    with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
-                        myzip.write(filename)
-                        self.append.emit("Compressed " + filename)
+                    if(roi_class==1):
+                        with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-[cell]-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
+                            myzip.write(filename)
+                            self.append.emit("Compressed class " + str(roi_class) +" "+ filename)
+                    elif(roi_class==2):
+                        with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-[chromosome]-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
+                            myzip.write(filename)
+                            self.append.emit("Compressed class " + str(roi_class) +" "+ filename)
                     os.remove(filename)
             file_sum=0
         self.progressBar.emit(len(filenames))
