@@ -6,7 +6,7 @@ Pillow
 cython
 matplotlib
 scikit-image
-tensorflow==2.2.0
+tensorflow==2.11.1
 opencv-python
 h5py
 imgaug
