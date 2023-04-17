@@ -204,7 +204,7 @@ def process_folder(coco_path):
     result = {}
     print("Combining...")
 
-    for f in tqdm(glob.glob(os.path.join(os.path.dirname(coco_path), "*.json") if mode == "single" else os.path.join(os.path.dirname(coco_path), "*", "*.json"))):
+    for f in tqdm(glob.glob(os.path.join(coco_path, "*.json") if mode == "single" else os.path.join(coco_path, "*", "*.json"))):
         with open(f, "r") as infile:
             try:
                 result.update(json.load(infile))
@@ -225,7 +225,7 @@ def process_folder(coco_path):
     #        rename_file(src_file, dst_file)
     #    os.rmdir(new_folder)
     print("Cleaning...")
-    for f in tqdm(glob.glob(os.path.join(os.path.join(os.path.dirname(coco_path), "*.json")) if mode == "single" else os.path.join(os.path.dirname(coco_path), "*", "*.json"))):
+    for f in tqdm(glob.glob(os.path.join(os.path.join(coco_path, "*.json")) if mode == "single" else os.path.join(coco_path, "*", "*.json"))):
         if os.path.basename(f) != default_file_name:
             os.remove(f)
     print("---CONVERT ENDED----")
