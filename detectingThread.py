@@ -135,7 +135,7 @@ class detectingThread(QtCore.QThread):
                 results = model.detect([image], verbose=0)
             
             r = results[0]
-            print(r)
+            # print(r)
             data = numpy.array(r['masks'], dtype=numpy.bool)
             # self.append.emit(data.shape)
             edges = []
@@ -167,6 +167,10 @@ class detectingThread(QtCore.QThread):
                             self.append.emit("Compressed class " + str(roi_class) +" "+ filename)
                     elif(roi_class==2):
                         with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-[chromosome]-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
+                            myzip.write(filename)
+                            self.append.emit("Compressed class " + str(roi_class) +" "+ filename)
+                    elif(roi_class==3):
+                        with ZipFile(self.ROI_PATH+"/"+os.path.basename(self.DETECT_PATH)+"-[nuclear]-"+str(self.conf_rate)+"-"+str(self.epoches)+"-"+str(self.step)+f"[{formatted_date_time}]"+".zip", 'a') as myzip:
                             myzip.write(filename)
                             self.append.emit("Compressed class " + str(roi_class) +" "+ filename)
                     os.remove(filename)

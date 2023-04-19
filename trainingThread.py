@@ -168,7 +168,7 @@ class trainingThread(QtCore.QThread):
                 # Add classes. We have only one class to add.
                 self.add_class("cell", 1, "cell")
                 self.add_class("cell", 2, "chromosome")
-
+                self.add_class("cell", 3, "nuclear")
                 # Train or validation dataset?
                 assert subset in ["train", "val"]
                 subset_dir = os.path.join(dataset_dir, subset)
@@ -177,7 +177,8 @@ class trainingThread(QtCore.QThread):
                 pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
                 annotations1 = ['via_region_data.json']
                 annotations2 = ['via_region_chromosome.json']
-                regions = [(a, subset_dir, 1) for a in annotations1] + [(a, subset_dir, 2) for a in annotations2]
+                annotations3 = ['via_region_nuclear.json']
+                regions = [(a, subset_dir, 1) for a in annotations1] + [(a, subset_dir, 2) for a in annotations2] + [(a, subset_dir, 3) for a in annotations3]
                 results = pool.map(load_annotations, regions)
                 pool.close()
                 pool.join()
@@ -212,7 +213,13 @@ class trainingThread(QtCore.QThread):
                 for i, p in enumerate(info["polygons"]):
                     # Get indexes of pixels inside the polygon and set them to 1
                     rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-                    mask[rr, cc, i] = 1
+                    # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
+                    try:
+                        mask[rr, cc, i] = 1
+                    except:
+                        pass
+                        # print("Error Occured")
+                        # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
                 # Return mask, and array of class IDs of each instance. Since we have
                 # one class ID only, we return an array of 1s
                 return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
@@ -241,11 +248,11 @@ class trainingThread(QtCore.QThread):
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
             # no need to train all layers, just the heads should do it.
-            self.update_training_status.emit("Training network all")
+            self.update_training_status.emit("Training network heads")
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
                         epochs=int(self.steps),
-                        layers='all',
+                        layers='heads',
                         augmentation = iaa.Sometimes(5/6, iaa.OneOf([
                         iaa.Fliplr(1),
                         iaa.Flipud(1),
