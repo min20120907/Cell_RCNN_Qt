@@ -164,7 +164,27 @@ def process_file(args):
 
 
 def process_folder(coco_path):
-    global txt, default_file_name, mode, append_mode, tmp_dir
+    global txt, default_file_name, mode, append_mode, tmp_dir, zips_path
+
+    args1 = []
+    for r, d, f in os.walk(coco_path):
+        filenames = []
+        zips = []
+        for file in f:
+            if os.path.splitext(file)[-1] == txt:
+                filenames.append(os.path.join(r, file))
+            elif os.path.splitext(file)[-1] == ".zip":
+                zips.append(os.path.join(r, file))
+    
+        for filename in filenames:
+            for zip_file in (zips_path or zips):
+                json_name = os.path.splitext(filename)[0] + "_" + os.path.splitext(os.path.basename(zip_file))[0] + ".json"
+                json_name = os.path.join(os.path.dirname(filename), json_name)
+                if append_mode and os.path.exists(json_name):
+                    continue
+                args1.append((zip_file, filename, json_name, os.path.dirname(filename)))
+
+
     
     #if tmp_dir:
     #    new_folder = os.path.join(tmp_dir, os.path.basename(coco_path))
@@ -175,24 +195,26 @@ def process_folder(coco_path):
     #        dst_file = os.path.join(new_folder, filename)
     #        rename_file(src_file, dst_file)
     #    coco_path = tmp_dir
-    
-    args1 = []
-    for r, d, f in os.walk(coco_path):
-        filenames = []
-        zips = []
-        for file in f:
-            if os.path.splitext(file)[-1] == txt:
-                filenames.append(os.path.join(r, file))
-            elif os.path.splitext(file)[-1] == ".zip":
-                zips.append(os.path.join(r, file))
 
-        for filename in filenames:
-            for zip_file in zips:
-                json_name = os.path.splitext(filename)[0] + "_" + os.path.splitext(os.path.basename(zip_file))[0] + ".json"
-                json_name = os.path.join(os.path.dirname(filename), json_name)
-                if append_mode and os.path.exists(json_name):
-                    continue
-                args1.append((zip_file, filename, json_name, os.path.dirname(filename)))
+
+    # args1 = []
+    # for r, d, f in os.walk(coco_path):
+    #     filenames = []
+    #     zips = []
+    #     for file in f:
+    #         if os.path.splitext(file)[-1] == txt:
+    #             filenames.append(os.path.join(r, file))
+    #         elif not zips_path and os.path.splitext(file)[-1] == ".zip":
+    #             zips.append(os.path.join(r, file))
+ 
+    #     for filename in filenames:
+    #         if not zips_path:
+    #             for zip_file in zips:
+    #                 json_name = os.path.splitext(filename)[0] + "_" + os.path.splitext(os.path.basename(zip_file))[0] + ".json"
+    #                 json_name = os.path.join(os.path.dirname(filename), json_name)
+    #                 if append_mode and os.path.exists(json_name):
+    #                     continue
+    #                 args1.append((zip_file, filename, json_name, os.path.dirname(filename)))
 
 
     print("Scanning completed!")
@@ -236,6 +258,7 @@ def process_folder(coco_path):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--coco_path", type=str, required=True, help="Path to COCO dataset")
+    parser.add_argument("--zips_path", type=str, help="Comma-separated list of paths to specified zips [Optional]")
     parser.add_argument("--txt", type=str, required=True, help="File extension to look for")
     parser.add_argument("--mode", type=str, default="batch", help="Mode: single or batch")
     parser.add_argument("--append_mode", action='store_true', help="Whether to append to existing JSON file or create new file")
@@ -243,6 +266,7 @@ if __name__ == "__main__":
     parser.add_argument("--json_file", type=str, default=default_file_name, help="JSON file name (default: 'via_region_data.json')")
     args = parser.parse_args()
 
+    zips_path = args.zips_path.split(",") if args.zips_path else []
     coco_path = args.coco_path
     txt = args.txt
     mode = args.mode
