@@ -20,6 +20,31 @@ mode = ""
 append_mode = False
 # tmp_dir = ""
 import shutil
+def json_append(filename, data):
+    try:
+        # Check if the file already exists
+        file_exists = os.path.isfile(filename)
+        
+        # If it doesn't exist, create a new file and write the data to it
+        if not file_exists:
+            with open(filename, 'w') as f:
+                json.dump(data, f)
+                
+        # If it does exist, load the existing data and update it with the new data
+        else:
+            with open(filename, 'r') as f:
+                try:
+                    existing_data = json.load(f)
+                except json.JSONDecodeError:
+                    existing_data = {}
+            print("Updating the existing data...")
+            existing_data.update(data)
+            return existing_data
+                
+    except Exception as e:
+        print(f"Error appending to JSON file: {str(e)}")
+
+
 
 def rename_file(src_file, dst_file):
     shutil.move(src_file, dst_file)
@@ -225,7 +250,7 @@ def process_folder(coco_path):
 
     result = {}
     print("Combining...")
-
+    output_coco_path = os.path.join(os.path.join(coco_path, os.path.pardir) if mode == "single" else coco_path, default_file_name)
     for f in tqdm(glob.glob(os.path.join(coco_path, "*.json") if mode == "single" else os.path.join(coco_path, "*", "*.json"))):
         with open(f, "r") as infile:
             try:
@@ -233,11 +258,15 @@ def process_folder(coco_path):
             except:
                 pass
 
-    with open(os.path.join(os.path.join( coco_path, os.path.pardir) if mode == "single" else coco_path, default_file_name), "a" if mode == "single" else "w" ) as outfile:
+    if append_mode:
+        result1 = json_append(output_coco_path,result)
+
+    with open(output_coco_path, "w") as outfile:
         try:
-            json.dump(result, outfile)
+            json.dump(result1, outfile)
         except:
             pass
+
 
     
     #if tmp_dir:
