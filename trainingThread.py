@@ -1,57 +1,39 @@
-import multiprocessing
-import subprocess
 import os
-import struct
 import sys
-import random
-import math
-import re
-import time
 import numpy as np
 import tensorflow as tf
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import skimage.io
-import codecs
 import imgaug.augmenters as iaa
-from zipfile import ZipFile
-from PymageJ.roi import ROIEncoder, ROIRect, ROIPolygon
-import glob
-import numpy
-from PIL import Image
 import skimage
-from skimage import feature
-import cv2
-import progressbar
 import time
 import logging
 logging.getLogger('tensorflow').disabled = True
 #PyQt5 Dependencies
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QMainWindow, QApplication, QListView, QFileDialog
-from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from PyQt5.QtCore import pyqtSlot, QThread
+from PyQt5 import QtCore
 #UI
-from main_ui import Ui_MainWindow
 #time
-from datetime import datetime
 import json
-import read_roi
-import io
-from os.path import dirname
+from tqdm import tqdm
 import json
-import threading
-import tensorflow.keras as keras
+import ray
+ray.init(ignore_reinit_error=True, object_store_memory=2000000000)
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 # 在程序中使用 keras 模块
 
 from solve_cudnn_error import *
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-import warnings
-warnings.filterwarnings("ignore", message="Operation .* was changed by setting attribute after it was run by a session")
-warnings.filterwarnings("ignore", category=UserWarning, module="tensorflow")
 from multiprocessing import Pool, cpu_count
+
+def generate_mask_subset(args):
+    height, width, subset = args
+    mask = np.zeros([height, width, len(subset)], dtype=np.uint8)
+    for i, j in enumerate(range(subset[0], subset[1])):
+        start = subset[j]['all_points'][:-1]
+        rr, cc = skimage.draw.polygon(start[:, 1], start[:, 0])
+        mask[rr, cc, i] = 1
+    return mask
+
+
 
 def load_annotations(args):
     annotation, subset_dir, class_id = args
@@ -110,6 +92,11 @@ class trainingThread(QtCore.QThread):
     update_training_status = QtCore.pyqtSignal(str)
     
     def run(self):
+        # Get the physical devices and set memory growth for GPU devices
+        physical_devices = tf.config.list_physical_devices('GPU')
+        if len(physical_devices) > 0:
+            for device in physical_devices:
+                tf.config.experimental.set_memory_growth(device, True)
         solve_cudnn_error()
         self.update_training_status.emit("Training started!")
         print("started input stream")
@@ -139,13 +126,13 @@ class trainingThread(QtCore.QThread):
             """
             # Give the configuration a recognizable name
             NAME = "cell"
-
+            MASK_CHANNELS = 1
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 2
+            IMAGES_PER_GPU = 4
 #            GPU_COUNT = 2
             # Number of classes (including background)
-            NUM_CLASSES = 1 + 2 # Background + cell + chromosome
+            NUM_CLASSES = 1 + 3 # Background + cell + chromosome
             # NUM_CLASSES = 1 + 1 # Background + cell
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
@@ -159,7 +146,7 @@ class trainingThread(QtCore.QThread):
         ############################################################
 
         class CustomDataset(utils.Dataset):
-            
+
             def load_custom(self, dataset_dir, subset):
                 """Load a subset of the bottle dataset.
                 dataset_dir: Root directory of the dataset.
@@ -174,12 +161,12 @@ class trainingThread(QtCore.QThread):
                 subset_dir = os.path.join(dataset_dir, subset)
 
                 # Load annotations from all JSON files using multiprocessing
-                pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-                annotations1 = ['via_region_data.json']
-                annotations2 = ['via_region_chromosome.json']
-                annotations3 = ['via_region_nuclear.json']
-                regions = [(a, subset_dir, 1) for a in annotations1] + [(a, subset_dir, 2) for a in annotations2] + [(a, subset_dir, 3) for a in annotations3]
-                results = pool.map(load_annotations, regions)
+                pool = Pool(processes=cpu_count())
+                annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
+                regions = [(a, subset_dir, 1) for a in annotations if "data_" in a] + \
+                          [(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
+                          [(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+                results = pool.map(load_annotations, tqdm(regions))
                 pool.close()
                 pool.join()
 
@@ -193,8 +180,6 @@ class trainingThread(QtCore.QThread):
                             width=image['width'], height=image['height'],
                             polygons=image['polygons'],
                             num_ids=image['num_ids'])
-                            
-
             def load_mask(self, image_id):
                 """Generate instance masks for an image.
                Returns:
@@ -202,8 +187,6 @@ class trainingThread(QtCore.QThread):
                     one mask per instance.
                 class_ids: a 1D array of class IDs of the instance masks.
                 """
-                # If not a cell dataset image, delegate to parent class.
-                image_info = self.image_info[image_id]
 
                 # Convert polygons to a bitmap mask of shape
                 # [height, width, instance_count]
@@ -217,12 +200,16 @@ class trainingThread(QtCore.QThread):
                     try:
                         mask[rr, cc, i] = 1
                     except:
-                        pass
+                        rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
+                        cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
+                        mask[rr, cc, i] = 1
                         # print("Error Occured")
                         # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
                 # Return mask, and array of class IDs of each instance. Since we have
                 # one class ID only, we return an array of 1s
                 return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
+
+
             def image_reference(self, image_id):
                 """Return the path of the image."""
                 info = self.image_info[image_id]
@@ -231,13 +218,15 @@ class trainingThread(QtCore.QThread):
 
 
         def train(model):
+
             """Train the model."""
             # Training dataset.
+            print("Loading training dataset")
             dataset_train = CustomDataset()
             dataset_train.load_custom(self.dataset_path,"train")
 
             dataset_train.prepare()
-            
+            print("Loading validation dataset")
             # Validation dataset
             dataset_val = CustomDataset()
             dataset_val.load_custom(self.dataset_path, "val")
@@ -248,12 +237,7 @@ class trainingThread(QtCore.QThread):
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
             # no need to train all layers, just the heads should do it.
-            self.update_training_status.emit("Training network heads")
-            model.train(dataset_train, dataset_val,
-                        learning_rate=config.LEARNING_RATE,
-                        epochs=int(self.steps),
-                        layers='heads',
-                        augmentation = iaa.Sometimes(5/6, iaa.OneOf([
+            aug = iaa.Sometimes(5/6, iaa.OneOf([
                         iaa.Fliplr(1),
                         iaa.Flipud(1),
                         iaa.Affine(rotate=(-45, 45)),
@@ -266,8 +250,14 @@ class trainingThread(QtCore.QThread):
                         iaa.Crop(percent=(0, 0.1)), # 隨機裁剪，裁剪比例為0%-10%
                         iaa.GaussianBlur(sigma=(0, 0.5)), # 高斯模糊，sigma值在0到0.5之間
                         iaa.AdditiveGaussianNoise(scale=(0, 0.05*255)), # 添加高斯噪聲，噪聲標準差為0到0.05的像素值
-                        iaa.ContrastNormalization((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
+                        iaa.LinearContrast((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
                         ]))
+            self.update_training_status.emit("Training network heads")
+            model.train(dataset_train, dataset_val,
+                        learning_rate=config.LEARNING_RATE,
+                        epochs=int(self.steps),
+                        layers='heads',
+                        augmentation = aug
                         )
             #gc.collect()
         '''
