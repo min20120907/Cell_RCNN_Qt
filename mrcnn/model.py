@@ -14,6 +14,7 @@ import re
 import math
 from collections import OrderedDict
 import multiprocessing
+import threading
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
@@ -25,20 +26,32 @@ from tensorflow.python.eager import context
 import tensorflow.keras.models as KM
 import cv2
 from multiprocessing.pool import ThreadPool
+from mrcnn.utils import Dataset
 from mrcnn import utils
 from multiprocessing import Pool, Process, Queue, cpu_count
-
+import ray
+from tensorflow.keras.metrics import Precision
 from tqdm import tqdm
 # Requires TensorFlow 2.0+
 from distutils.version import LooseVersion
 assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
-
+from tensorflow.keras.metrics import Accuracy
 tf.compat.v1.disable_eager_execution()
+
+
 
 ############################################################
 #  Utility Functions
 ############################################################
+from keras import backend as K
 
+def smooth_l1(y_true, y_pred):
+    """Compute smooth L1 loss.
+    """
+    diff = tf.abs(y_true - y_pred)
+    less_than_one = tf.cast(tf.less(diff, 1.0), "float32")
+    loss = (less_than_one * 0.5 * diff ** 2) + (1 - less_than_one) * (diff - 0.5)
+    return loss
 
 def log(text, array=None):
     """Prints a text message. And, optionally, if a Numpy array is provided it
@@ -1218,7 +1231,7 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
 #  Data Generator
 ############################################################
 
-def load_image_gt(dataset, config, image_id, augmentation=None):
+def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=1):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
     augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
         For example, passing imgaug.augmenters.Fliplr(0.5) flips images
@@ -1303,7 +1316,7 @@ def load_image_gt(dataset, config, image_id, augmentation=None):
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
                                     window, scale, active_class_ids)
-
+    
     return image, image_meta, class_ids, bbox, mask
 
 
@@ -1645,7 +1658,6 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     global_rois = np.hstack([y1, x1, y2, x2])
     rois[-remaining_count:] = global_rois
     return rois
-import ray
 
 @ray.remote
 def load_image_gt_remote(dataset, config, image_id, augmentation=None):
@@ -1779,7 +1791,7 @@ class DataGenerator(KU.Sequence):
                     batch_mrcnn_class_ids, -1)
                 outputs.extend(
                     [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
-
+        
         return inputs, outputs
     def __getitem__(self, idx):
         # Create a Ray actor to run the `load_image_gt_remote` function in parallel.
@@ -1813,7 +1825,7 @@ class DataGenerator(KU.Sequence):
             b += 1
         # Retrieve the results of the remote function calls in parallel.
         results = ray.get(remote_objects)
-        
+
         b=0
         # Add the results to the batch arrays.
         for result in results:
@@ -1888,8 +1900,13 @@ class DataGenerator(KU.Sequence):
                     batch_mrcnn_class_ids[b] = mrcnn_class_ids
                     batch_mrcnn_bbox[b] = mrcnn_bbox
                     batch_mrcnn_mask[b] = mrcnn_mask
+            del image
+            del gt_class_ids
+            del gt_boxes
+            del gt_masks
+            del gt_class_ids
             b += 1
-
+        del results
         inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
                   batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
         outputs = []
@@ -1932,6 +1949,7 @@ class MaskRCNN(object):
         """
         assert mode in ['training', 'inference']
         self.mode = mode
+        self.accuracy = Accuracy()
         self.config = config
         self.model_dir = model_dir
         self.set_log_dir()
@@ -2267,7 +2285,7 @@ class MaskRCNN(object):
 
         # Add Losses
         loss_names = [
-            "rpn_class_loss",  "rpn_bbox_loss",
+            "rpn_class_loss", "rpn_bbox_loss",
             "mrcnn_class_loss", "mrcnn_bbox_loss", "mrcnn_mask_loss"]
         for name in loss_names:
             layer = self.keras_model.get_layer(name)
@@ -2285,11 +2303,15 @@ class MaskRCNN(object):
             for w in self.keras_model.trainable_weights
             if 'gamma' not in w.name and 'beta' not in w.name]
         self.keras_model.add_loss(tf.add_n(reg_losses))
-
+        from tensorflow.keras.losses import binary_crossentropy
+        
         # Compile
         self.keras_model.compile(
             optimizer=optimizer,
-            loss=[None] * len(self.keras_model.outputs))
+            loss=[None] * len(self.keras_model.outputs),
+
+            # loss=[None] * len(self.keras_model.outputs)
+            )
 
         # Add metrics for losses
         for name in loss_names:
@@ -2373,7 +2395,14 @@ class MaskRCNN(object):
             self.config.NAME.lower()))
         self.checkpoint_path = self.checkpoint_path.replace(
             "*epoch*", "{epoch:04d}")
-
+    def accuracy_callback(self, epoch, logs):
+        self.accuracy.reset_states()
+        for batch in self.data_generator:
+            inputs, outputs = batch
+            y_true = outputs[:5]
+            y_pred = self.keras_model.predict(inputs)
+            self.accuracy.update_state(y_true, y_pred)
+        logs['accuracy'] = self.accuracy.result()
     def train(self, train_dataset, val_dataset, learning_rate, epochs, layers,
               augmentation=None, custom_callbacks=None, no_augmentation_sources=None):
         """Train the model.
@@ -2433,16 +2462,26 @@ class MaskRCNN(object):
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
 
+        # Calculate the accuracy
+        model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+                filepath=self.checkpoint_path,
+                save_weights_only=True,
+                monitor='val_accuracy',
+                mode='max',
+                save_best_only=True)
+        
         # Callbacks
         callbacks = [
             keras.callbacks.TensorBoard(log_dir=self.log_dir,
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
                                             verbose=0, save_weights_only=True),
+            model_checkpoint_callback
         ]
 
         # Add custom callbacks to the list
         if custom_callbacks:
+            print("loading custom callbacks")
             callbacks += custom_callbacks
 
         # Train
@@ -2966,3 +3005,75 @@ def denorm_boxes_graph(boxes, shape):
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)
+
+from keras.callbacks import Callback
+@ray.remote
+def process_image(image, inference_model):
+    molded_images = np.expand_dims(mold_image(image, inference_model.config), 0)
+    results = inference_model.detect(molded_images, verbose=1)
+    r = results[0]
+    return r
+class MeanAveragePrecisionCallback(Callback):
+    def __init__(self, train_model: MaskRCNN, inference_model: MaskRCNN, dataset: Dataset,
+                 calculate_map_at_every_X_epoch=5, dataset_limit=None,
+                 verbose=1):
+        super().__init__()
+        self.train_model = train_model
+        self.inference_model = inference_model
+        self.dataset = dataset
+        self.calculate_map_at_every_X_epoch = calculate_map_at_every_X_epoch
+        self.dataset_limit = len(self.dataset.image_ids)
+        if dataset_limit is not None:
+            self.dataset_limit = dataset_limit
+        self.dataset_image_ids = self.dataset.image_ids.copy()
+
+        self._verbose_print = print if verbose > 0 else lambda *a, **k: None
+
+    def on_epoch_end(self, epoch, logs=None):
+
+        if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
+            self._verbose_print("Calculating mAP...")
+            self._verbose_print("Dataset Limit: ", self.dataset_limit)
+            self._load_weights_for_model()
+            try:
+                mAPs = self._calculate_mean_average_precision()
+                mAP = np.mean(mAPs)
+
+                if logs is not None:
+                    logs["val_mean_average_precision"] = mAP
+
+                self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
+            except Exception as e: self._verbose_print(e)
+
+        super().on_epoch_end(epoch, logs)
+
+    def _load_weights_for_model(self):
+        last_weights_path = self.train_model.find_last()
+        self._verbose_print("Loaded weights for the inference model (last checkpoint of the train model): {0}".format(
+            last_weights_path))
+        self.inference_model.load_weights(last_weights_path,
+                                          by_name=True)
+
+    def _calculate_mean_average_precision(self):
+        mAPs = []
+        
+        # Use a random subset of the data when a limit is defined
+        np.random.shuffle(self.dataset_image_ids)       
+
+        futures = []
+        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
+            future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
+            futures.append(future)
+        
+        while futures:
+            futures_done, futures = ray.wait(futures, num_returns=100)
+            results = ray.get(futures_done)      
+            for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
+                future = process_image.remote(image, self.inference_model)
+                r = ray.get(future)
+                # Compute mAP - VOC uses IoU 0.5
+                AP, _, _, _ = utils.compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
+                                               r["class_ids"], r["scores"], r['masks'])
+                mAPs.append(AP)        
+
+        return np.array(mAPs)
