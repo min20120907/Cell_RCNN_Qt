@@ -26,7 +26,6 @@ import psutil
 
 ray.init(
     _system_config={
-        "max_io_workers": cpu_count(),  # More IO workers for parallelism.
         "object_spilling_config": json.dumps(
             {
               "type": "filesystem",
@@ -41,7 +40,7 @@ ray.init(
             }
         )
     },
-    ignore_reinit_error=True, object_store_memory=128*1024**2,_memory=50*1024**3, num_cpus=cpu_count(),
+    ignore_reinit_error=True, object_store_memory=2*1024**3,_memory=32*1024**3, num_cpus=cpu_count(),
 )
 def generate_mask_subset(args):
     height, width, subset = args
@@ -149,7 +148,7 @@ class trainingThread(QtCore.QThread):
             NAME = "cell"
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 8
+            IMAGES_PER_GPU = 6
 #            GPU_COUNT = 2
             # Number of classes (including background)
             NUM_CLASSES = 1 + 3 # Background + cell + chromosome
