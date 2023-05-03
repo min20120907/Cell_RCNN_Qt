@@ -196,10 +196,10 @@ class trainingThread(QtCore.QThread):
                 
                 # Load annotations from all JSON files using Ray multiprocessing
                 annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
-                futures = [load_annotations.remote(a, subset_dir, 1) for a in tqdm(annotations) if "data_" in a] + \
-                          [load_annotations.remote(a, subset_dir, 2) for a in tqdm(annotations) if "chromosome_" in a] + \
-                          [load_annotations.remote(a, subset_dir, 3) for a in tqdm(annotations) if "nuclear_" in a]
-                # Showing the progress bar
+                futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
+                          [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
+                          [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+                # Showing the progressbar
                 for _ in tqdm(to_iterator(futures), total=len(futures)):
                     pass
                 results = ray.get(futures)
