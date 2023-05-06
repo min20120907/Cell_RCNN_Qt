@@ -12,9 +12,6 @@ import ray
 from mrcnn.config import Config
 from PyQt5 import QtCore
 from multiprocessing import cpu_count
-# 初始化 Ray
-ray.init(ignore_reinit_error=True, object_store_memory=2.5*1024**3, num_cpus=cpu_count())
-
 
 import mrcnn.utils
 import mrcnn.visualize
@@ -78,7 +75,7 @@ def process_image(DEVICE, MODEL_DIR, weights_path, config, ROI_PATH, DETECT_PATH
     file_sum=0
 # 建立 DetectingThread 類別
 class detectingThread(QtCore.QThread):
-    def __init__(self, parent=None, WORK_DIR='', txt='', weight_path='', dataset_path='', ROI_PATH='', DETECT_PATH='', DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
+    def __init__(self, parent=None, WORK_DIR='', txt='', weight_path='', confidence='0.9', dataset_path='', ROI_PATH='', DETECT_PATH='', DEVICE=':/gpu', conf_rate=0.9, epoches=10, step=100):
         super(detectingThread, self).__init__(parent)
         self.DETECT_PATH = DETECT_PATH
         self.WORK_DIR = WORK_DIR
@@ -90,6 +87,7 @@ class detectingThread(QtCore.QThread):
         self.conf_rate = conf_rate
         self.epoches = epoches
         self.step = step
+        self.confidence = confidence
     append = QtCore.pyqtSignal(str)
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
@@ -101,7 +99,8 @@ class detectingThread(QtCore.QThread):
             """
             # Give the configuration a recognizable name
             NAME = "cell"
-
+            # Skip detections with < 90% confidence
+            DETECTION_MIN_CONFIDENCE = self.confidence
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
             IMAGES_PER_GPU = 1

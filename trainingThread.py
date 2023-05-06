@@ -39,9 +39,9 @@ ray.init(
                 "buffer_size": 1_000_000,
               },
             }
-        )
+        ),
     },
-    ignore_reinit_error=True, object_store_memory=2*1024**3,_memory=32*1024**3, num_cpus=None, num_gpus=1
+    ignore_reinit_error=True, object_store_memory=2.5*1024**3,_memory=32*1024**3, num_cpus=None, num_gpus=1
 )
 
 def generate_mask_subset(args):
@@ -152,6 +152,7 @@ class trainingThread(QtCore.QThread):
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
             IMAGES_PER_GPU = 4
+            # IMAGE_CHANNEL_COUNT = 1
 #            GPU_COUNT = 2
             # Number of classes (including background)
             NUM_CLASSES = 1 + 3 # Background + cell + chromosome
@@ -159,17 +160,11 @@ class trainingThread(QtCore.QThread):
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
 
-            # Skip detections with < 90% confidence
-            DETECTION_MIN_CONFIDENCE = self.confidence
-
             # Backbone network architecture
             BACKBONE = "resnet50"
 
             # Number of validation steps per epoch
             VALIDATION_STEPS = 50
-
-            # Backbone network strides
-            BACKBONE_STRIDES = [4, 8, 16, 32, 64]
 
 
         ############################################################

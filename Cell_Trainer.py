@@ -10,41 +10,16 @@ import BWThread
 import cocoThread
 import detectingThread
 import trainingThread
-import threading
 import imgseq_thread
 from os.path import dirname
-import io
-import read_roi
 import json
 from datetime import datetime
 from main_ui import Ui_MainWindow
-from PyQt5.QtCore import pyqtSlot
-from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from PyQt5.QtWidgets import QMainWindow, QApplication, QListView, QFileDialog
-from PyQt5 import QtCore, QtGui, QtWidgets
-import cv2
-from skimage import feature
-import skimage
-from PIL import Image
-import numpy
-import glob
-from PymageJ.roi import ROIEncoder, ROIRect, ROIPolygon
-from zipfile import ZipFile
-import codecs
-import skimage.io
-import matplotlib.patches as patches
-import matplotlib.pyplot as plt
-import matplotlib
-import tensorflow as tf
-import numpy as np
-import time
-import re
-import math
-import random
+from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog
+from PyQt5 import QtCore
 import sys
-import struct
-import os
-import subprocess
+
+
 class Cell(QMainWindow, Ui_MainWindow):
     # Global Variables
     epoches = 100
@@ -230,7 +205,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.myThread = QtCore.QThread()
         self.thread = detectingThread.detectingThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt=self.format_txt.toPlainText(
         ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.conf_rate.toPlainText(),
-        epoches=self.epochs.toPlainText(),step=self.steps.toPlainText() )
+        epoches=self.epochs.toPlainText(),step=self.steps.toPlainText(), confidence=self.confidence )
         self.thread.append.connect(self.append)
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
