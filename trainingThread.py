@@ -33,15 +33,17 @@ ray.init(
                 # Multiple directories can be specified to distribute
                 # IO across multiple mounted physical devices.
                 "directory_path": [
-                  "/SSD-1TB-GEN4/tmp/ray/spill",
                   "/mnt/800GB-DISK-1/ray/spill",
-                ]
+                  "/mnt/8TB-DISK-4/tmp/ray/spill",
+                ],
+                "buffer_size": 1_000_000,
               },
             }
         )
     },
-    ignore_reinit_error=True, object_store_memory=2*1024**3,_memory=32*1024**3, num_cpus=cpu_count(),
+    ignore_reinit_error=True, object_store_memory=2*1024**3,_memory=32*1024**3, num_cpus=None, num_gpus=1
 )
+
 def generate_mask_subset(args):
     height, width, subset = args
     mask = np.zeros([height, width, len(subset)], dtype=np.uint8)
@@ -143,12 +145,13 @@ class trainingThread(QtCore.QThread):
             """Configuration for training on the toy  dataset.
             Derives from the base Config class and overrides some values.
             """
-
+            MAX_GT_INSTANCES = 100
+            # IMAGE_RESIZE_MODE = "none"
             # Give the configuration a recognizable name
             NAME = "cell"
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 6
+            IMAGES_PER_GPU = 4
 #            GPU_COUNT = 2
             # Number of classes (including background)
             NUM_CLASSES = 1 + 3 # Background + cell + chromosome
@@ -298,7 +301,7 @@ class trainingThread(QtCore.QThread):
                         epochs=int(self.steps),
                         layers='heads',
                         custom_callbacks=[mean_average_precision_callback],
-                        # augmentation = aug,
+                        augmentation = aug,
                         )
            
         ############################################################
