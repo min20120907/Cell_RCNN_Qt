@@ -37,13 +37,13 @@ from distutils.version import LooseVersion
 assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
 from tensorflow.keras.metrics import Accuracy
 tf.compat.v1.disable_eager_execution()
-
+import tensorflow.compat.v1 as tf_v1
 
 
 ############################################################
 #  Utility Functions
 ############################################################
-from keras import backend as K
+from tensorflow.keras import backend as K
 
 def smooth_l1(y_true, y_pred):
     """Compute smooth L1 loss.
@@ -1230,8 +1230,218 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
 ############################################################
 #  Data Generator
 ############################################################
+import ray
+from typing import Tuple
 
-def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=1):
+@ray.remote(num_cpus=None)
+def process_image_piece( image, mask, config, sub_batch_size):
+    """Load and return ground truth data for an image (image, mask, bounding boxes).
+
+    Returns:
+    image: [height, width, 3]
+    mask: [height, width, instance_count]. The height and width are those
+        of the image unless use_mini_mask is True, in which case they are
+        defined in MINI_MASK_SHAPE.
+    """
+    # Load image and mask
+
+    image, window, scale, padding, crop = utils.resize_image(
+        image,
+        min_dim=config.IMAGE_MIN_DIM/sub_batch_size,
+        min_scale=config.IMAGE_MIN_SCALE,
+        max_dim=config.IMAGE_MAX_DIM,
+        mode=config.IMAGE_RESIZE_MODE)
+    mask = utils.resize_mask(mask, scale, padding, crop)
+
+    # Note that some boxes might be all zeros if the corresponding mask got cropped out.
+    # and here is to filter them out
+    _idx = np.sum(mask, axis=(0, 1)) > 0
+    mask = mask[:, :, _idx]
+
+    # Bounding boxes. Note that some boxes might be all zeros
+    # if the corresponding mask got cropped out.
+    # bbox: [num_instances, (y1, x1, y2, x2)]
+    bbox = utils.extract_bboxes(mask)
+    
+    # Resize masks to smaller size to reduce memory usage
+    if config.USE_MINI_MASK:
+        mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
+    
+
+    
+    return image, mask, bbox, scale
+
+def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=32):
+    """Load and return ground truth data for an image (image, mask, bounding boxes).
+    augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
+        For example, passing imgaug.augmenters.Fliplr(0.5) flips images
+        right/left 50% of the time.
+    Returns:
+    image: [height, width, 3]
+    shape: the original shape of the image before resizing and cropping.
+    class_ids: [instance_count] Integer class IDs
+    bbox: [instance_count, (y1, x1, y2, x2)]
+    mask: [height, width, instance_count]. The height and width are those
+        of the image unless use_mini_mask is True, in which case they are
+        defined in MINI_MASK_SHAPE.
+    """
+    # Load image and mask
+    image = dataset.load_image(image_id)
+    mask, class_ids = dataset.load_mask(image_id)
+    original_shape = image.shape
+    # Split image and mask into smaller pieces
+    pieces = []
+    image_pieces = np.array_split(image, sub_batch_size)
+    mask_pieces = np.array_split(mask, sub_batch_size, axis=-1)
+    
+    for i, (img_piece, mask_piece) in enumerate(zip(image_pieces, mask_pieces)):
+        pieces.append(process_image_piece.remote(img_piece, mask_piece, config, sub_batch_size))
+    # Retrieve processed pieces
+    results = ray.get(pieces)
+    images, masks, bboxes, scales = zip(*results)
+    active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
+    source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
+    active_class_ids[source_class_ids] = 1
+    if augmentation:
+        import imgaug
+
+        # Augmenters that are safe to apply to masks
+        # Some, such as Affine, have settings that make them unsafe, so always
+        # test your augmentation on masks
+        MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
+                           "Fliplr", "Flipud", "CropAndPad",
+                           "Affine", "PiecewiseAffine"]
+
+        def hook(images, augmenter, parents, default):
+            """Determines which augmenters to apply to masks."""
+            return augmenter.__class__.__name__ in MASK_AUGMENTERS
+
+        # Store shapes before augmentation to compare
+        image_shape = image.shape
+        mask_shape = mask.shape
+        # Make augmenters deterministic to apply similarly to images and masks
+        det = augmentation.to_deterministic()
+        image = det.augment_image(image)
+        # Change mask to np.uint8 because imgaug doesn't support np.bool
+        if mask_shape[-1] == 1 or mask_shape[-1] == 3:
+            mask = det.augment_image(mask.astype(np.uint8),
+                                         hooks=imgaug.HooksImages(activator=hook)) 
+        else:
+            mask = det.augment_images(mask.astype(np.uint8),
+                                         hooks=imgaug.HooksImages(activator=hook))
+        # Verify that shapes didn't change
+        assert image.shape == image_shape, "Augmentation shouldn't change image size"
+        assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+        # Change mask back to bool
+        mask = mask.astype(np.bool)
+    # Concatenate results
+    image = np.concatenate(images)
+    mask = np.concatenate(masks, axis=-1)
+    bboxes_r = np.concatenate(bboxes, axis=0)
+    # print("Original Shape: ", original_shape)
+    # print("Result Shape: ", image.shape)
+    h, w = image.shape[:2]
+    window = (0, 0, h, w)
+    scale = scales[0]
+
+    # Image meta data
+    image_meta = compose_image_meta(image_id, original_shape, image.shape,
+                                  window, scale, active_class_ids)
+
+    return image, image_meta, class_ids, bboxes_r, mask
+
+
+
+
+def load_image_gt_gpu(dataset, config, image_id, augmentation=None, sub_batch_size=1):
+    """Load and return ground truth data for an image (image, mask, bounding boxes).
+    augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
+        For example, passing imgaug.augmenters.Fliplr(0.5) flips images
+        right/left 50% of the time.
+    Returns:
+    image: [height, width, 3]
+    shape: the original shape of the image before resizing and cropping.
+    class_ids: [instance_count] Integer class IDs
+    bbox: [instance_count, (y1, x1, y2, x2)]
+    mask: [height, width, instance_count]. The height and width are those
+        of the image unless use_mini_mask is True, in which case they are
+        defined in MINI_MASK_SHAPE.
+    """
+    # Load image and mask
+    tf.compat.v1.enable_eager_execution()
+    with tf.device(":/gpu"):
+        image = dataset.load_image(image_id)
+        mask, class_ids = dataset.load_mask(image_id)
+        original_shape = image.shape
+        image, window, scale, padding, crop = utils.resize_image(
+            image,
+            min_dim=config.IMAGE_MIN_DIM,
+            min_scale=config.IMAGE_MIN_SCALE,
+            max_dim=config.IMAGE_MAX_DIM,
+            mode=config.IMAGE_RESIZE_MODE)
+        mask = utils.resize_mask(mask, scale, padding, crop)
+
+        # Augmentation
+        if augmentation:
+            import imgaug
+
+            # Augmenters that are safe to apply to masks
+            # Some, such as Affine, have settings that make them unsafe, so always
+            # test your augmentation on masks
+            MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
+                               "Fliplr", "Flipud", "CropAndPad",
+                               "Affine", "PiecewiseAffine"]
+
+            def hook(images, augmenter, parents, default):
+                """Determines which augmenters to apply to masks."""
+                return augmenter.__class__.__name__ in MASK_AUGMENTERS
+
+            # Store shapes before augmentation to compare
+            image_shape = image.shape
+            mask_shape = mask.shape
+            # Make augmenters deterministic to apply similarly to images and masks
+            det = augmentation.to_deterministic()
+            image = det.augment_image(image)
+            # Change mask to np.uint8 because imgaug doesn't support np.bool
+            if mask_shape[-1] == 1 or mask_shape[-1] == 3:
+                mask = det.augment_image(mask.astype(np.uint8),
+                                             hooks=imgaug.HooksImages(activator=hook)) 
+            else:
+                mask = det.augment_images(mask.astype(np.uint8),
+                                             hooks=imgaug.HooksImages(activator=hook))
+            # Verify that shapes didn't change
+            assert image.shape == image_shape, "Augmentation shouldn't change image size"
+            assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+            # Change mask back to bool
+            mask = mask.astype(np.bool)
+        
+        
+        # Get indices of nonzero columns in mask
+        _idx = tf.reduce_sum(tf.cast(mask, tf.int32), axis=(0, 1)) > 0
+        # Extract masked regions of mask and class_ids
+        mask = tf.boolean_mask(mask, _idx, axis=2)
+        class_ids = tf.boolean_mask(class_ids, _idx)
+        # mask.set_shape([config.IMAGE_MAX_DIM, config.IMAGE_MAX_DIM, config.MAX_GT_INSTANCES])
+        # Run the mask tensor in a session
+        mask_np = tf.identity(mask).numpy()
+        # Compute bounding boxes
+        bbox = utils.extract_bboxes(mask_np)
+        # Active classes
+        active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
+        source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
+        active_class_ids[source_class_ids] = 1
+        # Resize masks to smaller size to reduce memory usage
+        if config.USE_MINI_MASK:
+            mini_mask = utils.minimize_mask(bbox, mask_np, config.MINI_MASK_SHAPE)
+        else:
+            mini_mask = mask_np
+        # Image meta data
+        image_meta = compose_image_meta(image_id, original_shape, tf.shape(image),
+                                        window, scale, active_class_ids)
+        tf.compat.v1.disable_eager_execution()
+        return image, image_meta, class_ids, bbox, mini_mask
+
+def load_image_gt_worked(dataset, config, image_id, augmentation=None, sub_batch_size=1):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
     augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
         For example, passing imgaug.augmenters.Fliplr(0.5) flips images
@@ -1315,9 +1525,11 @@ def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=1
 
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
-                                    window, scale, active_class_ids)
+                                  window, scale, active_class_ids)
+
     
     return image, image_meta, class_ids, bbox, mask
+
 
 
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
@@ -1659,7 +1871,7 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     rois[-remaining_count:] = global_rois
     return rois
 
-@ray.remote
+@ray.remote(num_cpus=None)
 def load_image_gt_remote(dataset, config, image_id, augmentation=None):
     return load_image_gt(dataset, config, image_id, augmentation)
 class DataGenerator(KU.Sequence):
@@ -1688,6 +1900,7 @@ class DataGenerator(KU.Sequence):
         
     def __len__(self):
         return int(np.ceil(len(self.image_ids) / float(self.batch_size)))
+
     def __getitem__old(self, idx):
         b = 0
         image_index = -1
@@ -1823,9 +2036,11 @@ class DataGenerator(KU.Sequence):
             
             # Increment `b`.
             b += 1
-        # Retrieve the results of the remote function calls in parallel.
-        results = ray.get(remote_objects)
 
+        # Retrieve the results of the remote function calls in parallel.
+        
+        
+        results = ray.get(remote_objects) 
         b=0
         # Add the results to the batch arrays.
         for result in results:
@@ -1846,7 +2061,6 @@ class DataGenerator(KU.Sequence):
                     rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask = \
                         build_detection_targets(
                             rpn_rois, gt_class_ids, gt_boxes, gt_masks, self.config)
-
             # Init batch arrays
             if b == 0:
                 batch_image_meta = np.zeros(
@@ -1876,7 +2090,6 @@ class DataGenerator(KU.Sequence):
                             (self.batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
                         batch_mrcnn_mask = np.zeros(
                             (self.batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
-
             # If more instances than fits in the array, sub-sample from them.
             if gt_boxes.shape[0] > self.config.MAX_GT_INSTANCES:
                 ids = np.random.choice(
@@ -1884,7 +2097,6 @@ class DataGenerator(KU.Sequence):
                 gt_class_ids = gt_class_ids[ids]
                 gt_boxes = gt_boxes[ids]
                 gt_masks = gt_masks[:, :, ids] 
-            
             # Add to batch
             batch_image_meta[b] = image_meta
             batch_rpn_match[b] = rpn_match[:, np.newaxis]
@@ -1900,17 +2112,12 @@ class DataGenerator(KU.Sequence):
                     batch_mrcnn_class_ids[b] = mrcnn_class_ids
                     batch_mrcnn_bbox[b] = mrcnn_bbox
                     batch_mrcnn_mask[b] = mrcnn_mask
-            del image
-            del gt_class_ids
-            del gt_boxes
-            del gt_masks
-            del gt_class_ids
+
             b += 1
-        del results
+
         inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
                   batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
         outputs = []
-
         if self.random_rois:
             inputs.extend([batch_rpn_rois])
             if self.detection_targets:
@@ -1920,7 +2127,6 @@ class DataGenerator(KU.Sequence):
                     batch_mrcnn_class_ids, -1)
                 outputs.extend(
                     [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
-
         return inputs, outputs
 
 def set_trainable_layer(layer, layer_regex):
@@ -3006,17 +3212,21 @@ def denorm_boxes_graph(boxes, shape):
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)
 
-from keras.callbacks import Callback
-@ray.remote
+from tensorflow.keras.callbacks import Callback
+@ray.remote(num_cpus=None)
 def process_image(image, inference_model):
     molded_images = np.expand_dims(mold_image(image, inference_model.config), 0)
     results = inference_model.detect(molded_images, verbose=1)
     r = results[0]
     return r
+
 class MeanAveragePrecisionCallback(Callback):
     def __init__(self, train_model: MaskRCNN, inference_model: MaskRCNN, dataset: Dataset,
                  calculate_map_at_every_X_epoch=5, dataset_limit=None,
                  verbose=1):
+        
+        
+        
         super().__init__()
         self.train_model = train_model
         self.inference_model = inference_model
@@ -3030,22 +3240,22 @@ class MeanAveragePrecisionCallback(Callback):
         self._verbose_print = print if verbose > 0 else lambda *a, **k: None
 
     def on_epoch_end(self, epoch, logs=None):
+        with tf.compat.v1.enable_eager_execution():
+            if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
+                self._verbose_print("Calculating mAP...")
+                self._verbose_print("Dataset Limit: ", self.dataset_limit)
+                self._load_weights_for_model()
+                try:
+                    mAPs = self._calculate_mean_average_precision()
+                    mAP = np.mean(mAPs)
 
-        if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
-            self._verbose_print("Calculating mAP...")
-            self._verbose_print("Dataset Limit: ", self.dataset_limit)
-            self._load_weights_for_model()
-            try:
-                mAPs = self._calculate_mean_average_precision()
-                mAP = np.mean(mAPs)
+                    if logs is not None:
+                        logs["val_mean_average_precision"] = mAP
 
-                if logs is not None:
-                    logs["val_mean_average_precision"] = mAP
+                    self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
+                except Exception as e: self._verbose_print(e)
 
-                self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
-            except Exception as e: self._verbose_print(e)
-
-        super().on_epoch_end(epoch, logs)
+            super().on_epoch_end(epoch, logs)
 
     def _load_weights_for_model(self):
         last_weights_path = self.train_model.find_last()
@@ -3053,21 +3263,21 @@ class MeanAveragePrecisionCallback(Callback):
             last_weights_path))
         self.inference_model.load_weights(last_weights_path,
                                           by_name=True)
-
+    
     def _calculate_mean_average_precision(self):
-        mAPs = []
-        
-        # Use a random subset of the data when a limit is defined
-        np.random.shuffle(self.dataset_image_ids)       
+        with tf.compat.v1.enable_eager_execution():
+            mAPs = []
 
-        futures = []
-        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
-            future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
-            futures.append(future)
-        
-        while futures:
-            futures_done, futures = ray.wait(futures, num_returns=100)
-            results = ray.get(futures_done)      
+            # Use a random subset of the data when a limit is defined
+            np.random.shuffle(self.dataset_image_ids)       
+
+            futures = []
+            for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
+                future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
+                futures.append(future)
+
+
+            results = ray.get(futures)      
             for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
                 future = process_image.remote(image, self.inference_model)
                 r = ray.get(future)
@@ -3075,5 +3285,23 @@ class MeanAveragePrecisionCallback(Callback):
                 AP, _, _, _ = utils.compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
                                                r["class_ids"], r["scores"], r['masks'])
                 mAPs.append(AP)        
+
+            return np.array(mAPs)
+    def _calculate_mean_average_precision_gpu(self):
+        mAPs = []
+
+        # Use a random subset of the data when a limit is defined
+        np.random.shuffle(self.dataset_image_ids)
+
+        for image_id in self.dataset_image_ids[:self.dataset_limit]:
+            image, image_meta, gt_class_id, gt_bbox, gt_mask = load_image_gt(self.dataset, self.inference_model.config,
+                                                                             image_id, use_mini_mask=False)
+            molded_images = np.expand_dims(mold_image(image, self.inference_model.config), 0)
+            results = self.inference_model.detect(molded_images, verbose=0)
+            r = results[0]
+            # Compute mAP - VOC uses IoU 0.5
+            AP, _, _, _ = utils.compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
+                                           r["class_ids"], r["scores"], r['masks'])
+            mAPs.append(AP)
 
         return np.array(mAPs)
