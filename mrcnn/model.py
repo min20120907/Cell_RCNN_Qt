@@ -10,6 +10,7 @@ Written by Waleed Abdulla
 import gc
 import os
 import datetime
+import queue
 import re
 import math
 from collections import OrderedDict
@@ -37,16 +38,29 @@ from tensorflow.keras.metrics import Accuracy
 tf.compat.v1.disable_eager_execution()
 
 
-
 ############################################################
 #  Utility Functions
 ############################################################
-import tensorflow.keras.callbacks as callbacks
-class PrintPrecisionCallback(callbacks.Callback):
-    def on_batch_end(self, batch, logs=None):
-        if logs is not None:
-            print("Precision for batch {}: {:.4f}".format(batch, logs["precision"]))
+class TorchDataGeneratorSequence(keras.utils.Sequence):
+    def __init__(self, torch_data_generator):
+        self.torch_data_generator = torch_data_generator
 
+    def __len__(self):
+        return len(self.torch_data_generator)
+
+    def __getitem__(self, idx):
+        x, y = self.torch_data_generator[idx]
+        x = [t for t in x]
+        y = [t for t in y]
+        return x, y
+import tensorflow.keras.callbacks as callbacks
+
+class PrintPrecisionCallback(callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is not None and 'precision' in logs:
+            print("Precision for epoch {}: {:.4f}".format(epoch + 1, logs["precision"]))
+        else:
+            print("Precision not found!")
 from tensorflow.keras import backend as K
 
 def smooth_l1(y_true, y_pred):
@@ -1810,6 +1824,160 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
 @ray.remote(num_cpus=None)
 def load_image_gt_remote(dataset, config, image_id, augmentation=None):
     return load_image_gt(dataset, config, image_id, augmentation)
+
+import torch
+from torch.utils.data import DataLoader
+
+class TorchDataGenerator(torch.utils.data.Dataset):
+    def __init__(self, dataset, config, shuffle=True, augmentation=None,
+                 random_rois=0, detection_targets=False):
+        
+        self.image_ids = np.copy(dataset.image_ids)
+        self.dataset = dataset
+        self.config = config
+
+        # Anchors
+        # [anchor_count, (y1, x1, y2, x2)]
+        self.backbone_shapes = compute_backbone_shapes(config, config.IMAGE_SHAPE)
+        self.anchors = utils.generate_pyramid_anchors(config.RPN_ANCHOR_SCALES,
+                                                      config.RPN_ANCHOR_RATIOS,
+                                                      self.backbone_shapes,
+                                                      config.BACKBONE_STRIDES,
+                                                      config.RPN_ANCHOR_STRIDE)
+
+        self.shuffle = shuffle
+        self.augmentation = augmentation
+        self.random_rois = random_rois
+        self.batch_size = self.config.BATCH_SIZE
+        self.detection_targets = detection_targets
+        
+        
+    def __len__(self):
+        return int(np.ceil(len(self.image_ids) / float(self.batch_size)))
+    def __getitem__(self, idx):
+        # Create a Ray actor to run the `load_image_gt_remote` function in parallel.
+        load_image_gt_actor = ray.remote(load_image_gt)
+
+        # Create a list of remote objects that call the `load_image_gt_remote` function.
+        # We'll use this list to retrieve the results of the remote function calls later.
+        remote_objects = []
+
+        b = 0
+        image_index = -1
+        while b < self.batch_size:
+            # Increment index to pick next image. Shuffle if at the start of an epoch.
+            image_index = (image_index + 1) % len(self.image_ids)
+
+            if self.shuffle and image_index == 0:
+                np.random.shuffle(self.image_ids)
+
+            # Get GT bounding boxes and masks for image.
+            image_id = self.image_ids[image_index]
+
+            # Submit the `load_image_gt_remote` function call as a remote task to be run in parallel.
+            # The `load_image_gt_remote` function call returns a `ray.ObjectRef` that we can use to
+            # retrieve the result of the remote function call later.
+            remote_obj = load_image_gt_actor.remote(self.dataset, self.config, image_id, self.augmentation)
+            
+            # Add the `ray.ObjectRef` to our list of remote objects.
+            remote_objects.append(remote_obj)
+            
+            # Increment `b`.
+            b += 1
+
+        # Retrieve the results of the remote function calls in parallel.
+        
+        
+        results = ray.get(remote_objects) 
+        b=0
+        # Add the results to the batch arrays.
+        for result in results:
+            image, image_meta, gt_class_ids, gt_boxes, gt_masks = result
+            # Skip images that have no instances. This can happen in cases
+            # where we train on a subset of classes and the image doesn't
+            # have any of the classes we care about.
+            if not np.any(gt_class_ids > 0):
+                continue
+            # RPN Targets
+            rpn_match, rpn_bbox = build_rpn_targets(image.shape, self.anchors,
+                                                gt_class_ids, gt_boxes, self.config)
+            # Mask R-CNN Targets
+            if self.random_rois:
+                rpn_rois = generate_random_rois(
+                    image.shape, self.random_rois, gt_class_ids, gt_boxes)
+                if self.detection_targets:
+                    rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask = \
+                        build_detection_targets(
+                            rpn_rois, gt_class_ids, gt_boxes, gt_masks, self.config)
+            # Init batch arrays
+            if b == 0:
+                batch_image_meta = np.zeros(
+                    (self.batch_size,) + image_meta.shape, dtype=image_meta.dtype)
+                batch_rpn_match = np.zeros(
+                    [self.batch_size, self.anchors.shape[0], 1], dtype=rpn_match.dtype)
+                batch_rpn_bbox = np.zeros(
+                    [self.batch_size, self.config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
+                batch_images = np.zeros(
+                    (self.batch_size,) + image.shape, dtype=np.float32)
+                batch_gt_class_ids = np.zeros(
+                    (self.batch_size, self.config.MAX_GT_INSTANCES), dtype=np.int32)
+                batch_gt_boxes = np.zeros(
+                    (self.batch_size, self.config.MAX_GT_INSTANCES, 4), dtype=np.int32)
+                batch_gt_masks = np.zeros(
+                    (self.batch_size, gt_masks.shape[0], gt_masks.shape[1],
+                     self.config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
+                if self.random_rois:
+                    batch_rpn_rois = np.zeros(
+                        (self.batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
+                    if self.detection_targets:
+                        batch_rois = np.zeros(
+                            (self.batch_size,) + rois.shape, dtype=rois.dtype)
+                        batch_mrcnn_class_ids = np.zeros(
+                            (self.batch_size,) + mrcnn_class_ids.shape, dtype=mrcnn_class_ids.dtype)
+                        batch_mrcnn_bbox = np.zeros(
+                            (self.batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
+                        batch_mrcnn_mask = np.zeros(
+                            (self.batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
+            # If more instances than fits in the array, sub-sample from them.
+            if gt_boxes.shape[0] > self.config.MAX_GT_INSTANCES:
+                ids = np.random.choice(
+                    np.arange(gt_boxes.shape[0]), self.config.MAX_GT_INSTANCES, replace=False)
+                gt_class_ids = gt_class_ids[ids]
+                gt_boxes = gt_boxes[ids]
+                gt_masks = gt_masks[:, :, ids] 
+            # Add to batch
+            batch_image_meta[b] = image_meta
+            batch_rpn_match[b] = rpn_match[:, np.newaxis]
+            batch_rpn_bbox[b] = rpn_bbox
+            batch_images[b] = mold_image(image.astype(np.float32), self.config)
+            batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
+            batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
+            batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
+            if self.random_rois:
+                batch_rpn_rois[b] = rpn_rois
+                if self.detection_targets:
+                    batch_rois[b] = rois
+                    batch_mrcnn_class_ids[b] = mrcnn_class_ids
+                    batch_mrcnn_bbox[b] = mrcnn_bbox
+                    batch_mrcnn_mask[b] = mrcnn_mask
+
+            b += 1
+
+        inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
+                  batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
+        outputs = []
+        if self.random_rois:
+            inputs.extend([batch_rpn_rois])
+            if self.detection_targets:
+                inputs.extend([batch_rois])
+                # Keras requires that output and targets have the same number of dimensions
+                batch_mrcnn_class_ids = np.expand_dims(
+                    batch_mrcnn_class_ids, -1)
+                outputs.extend(
+                    [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
+        return inputs, outputs
+
+
 class DataGenerator(KU.Sequence):
     def __init__(self, dataset, config, shuffle=True, augmentation=None,
                  random_rois=0, detection_targets=False):
@@ -2064,6 +2232,17 @@ class DataGenerator(KU.Sequence):
                 outputs.extend(
                     [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
         return inputs, outputs
+def generate_anchors(config):
+    backbone_shapes = compute_backbone_shapes(config, config.IMAGE_SHAPE)
+    anchors = utils.generate_pyramid_anchors(config.RPN_ANCHOR_SCALES,
+                                             config.RPN_ANCHOR_RATIOS,
+                                             backbone_shapes,
+                                             config.BACKBONE_STRIDES,
+                                             config.RPN_ANCHOR_STRIDE)
+    return anchors
+
+
+
 
 def set_trainable_layer(layer, layer_regex):
     """Sets the trainable attribute for a layer and returns the layer name and its trainable status."""
@@ -2473,7 +2652,6 @@ class MaskRCNN(object):
                 * self.config.LOSS_WEIGHTS.get(name, 1.))
             self.keras_model.add_metric(loss, name=name, aggregation='mean')
 
-
     def set_trainable(self, layer_regex, keras_model=None, indent=0, verbose=1):
         """Sets model layers as trainable if their names match the given regular expression."""
         # Print message on the first call (but not on recursive calls)
@@ -2603,10 +2781,10 @@ class MaskRCNN(object):
         if layers in layer_regex.keys():
             layers = layer_regex[layers]
 
-        # Data generators
-        train_generator = DataGenerator(train_dataset, self.config, shuffle=True,
-                                         augmentation=augmentation)
-        val_generator = DataGenerator(val_dataset, self.config, shuffle=True)
+        train_torch_generator = TorchDataGenerator(train_dataset, self.config, shuffle=True, augmentation=augmentation)
+        train_generator = TorchDataGeneratorSequence(train_torch_generator)
+        val_torch_generator = TorchDataGenerator(val_dataset, self.config, shuffle=True)
+        val_generator = TorchDataGeneratorSequence(val_torch_generator)
 
         # Create log_dir if it does not exist
         if not os.path.exists(self.log_dir):
@@ -2657,7 +2835,7 @@ class MaskRCNN(object):
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
-            workers=workers,
+            workers=1,
             use_multiprocessing=False,
         )
         self.epoch = max(self.epoch, epochs)
@@ -3139,6 +3317,36 @@ def norm_boxes_graph(boxes, shape):
     shift = tf.constant([0., 0., 1., 1.])
     return tf.divide(boxes - shift, scale)
 
+import numba as nb
+
+@nb.jit(nopython=True, parallel=True)
+def compute_ap_jit(gt_boxes, gt_class_ids, gt_masks,
+                   pred_boxes, pred_class_ids, pred_scores, pred_masks,
+                   iou_threshold=0.5):
+    # Get matches and overlaps
+    gt_match, pred_match, overlaps = compute_matches(
+        gt_boxes, gt_class_ids, gt_masks,
+        pred_boxes, pred_class_ids, pred_scores, pred_masks,
+        iou_threshold)
+
+    # Compute precision and recall at each prediction box step
+    precisions = np.cumsum(pred_match > -1) / (np.arange(len(pred_match)) + 1)
+    recalls = np.cumsum(pred_match > -1).astype(np.float32) / len(gt_match)
+
+    # Pad with start and end values to simplify the math
+    precisions = np.concatenate([[0], precisions, [0]])
+    recalls = np.concatenate([[0], recalls, [1]])
+
+    # Ensure precision values decrease but don't increase
+    for i in nb.prange(len(precisions) - 2, -1, -1):
+        precisions[i] = np.maximum(precisions[i], precisions[i + 1])
+
+    # Compute mean AP over recall range
+    indices = np.where(recalls[:-1] != recalls[1:])[0] + 1
+    mAP = np.sum((recalls[indices] - recalls[indices - 1]) *
+                 precisions[indices])
+
+    return mAP, precisions, recalls, overlaps
 
 def denorm_boxes_graph(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
@@ -3182,24 +3390,20 @@ class MeanAveragePrecisionCallback(Callback):
         self.dataset_image_ids = self.dataset.image_ids.copy()
 
         self._verbose_print = print if verbose > 0 else lambda *a, **k: None
-
     def on_epoch_end(self, epoch, logs=None):
-        with tf.compat.v1.enable_eager_execution():
-            if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
-                self._verbose_print("Calculating mAP...")
-                self._verbose_print("Dataset Limit: ", self.dataset_limit)
-                self._load_weights_for_model()
-                try:
-                    mAPs = self._calculate_mean_average_precision()
-                    mAP = np.mean(mAPs)
-
-                    if logs is not None:
-                        logs["val_mean_average_precision"] = mAP
-
-                    self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
-                except Exception as e: self._verbose_print(e)
-
-            super().on_epoch_end(epoch, logs)
+        
+        if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
+            self._verbose_print("Calculating mAP...")
+            self._verbose_print("Dataset Limit: ", self.dataset_limit)
+            self._load_weights_for_model()
+            try:
+                mAPs = self._calculate_mean_average_precision()
+                mAP = np.mean(mAPs)
+                if logs is not None:
+                    logs["val_mean_average_precision"] = mAP
+                self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
+            except Exception as e: self._verbose_print(e)
+        super().on_epoch_end(epoch, logs)
 
     def _load_weights_for_model(self):
         last_weights_path = self.train_model.find_last()
@@ -3207,30 +3411,24 @@ class MeanAveragePrecisionCallback(Callback):
             last_weights_path))
         self.inference_model.load_weights(last_weights_path,
                                           by_name=True)
-    
     def _calculate_mean_average_precision(self):
-        with tf.compat.v1.enable_eager_execution():
-            mAPs = []
-
-            # Use a random subset of the data when a limit is defined
-            np.random.shuffle(self.dataset_image_ids)       
-
-            futures = []
-            for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
-                future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
-                futures.append(future)
-
-
-            results = ray.get(futures)      
-            for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
-                future = process_image.remote(image, self.inference_model)
-                r = ray.get(future)
-                # Compute mAP - VOC uses IoU 0.5
-                AP, _, _, _ = utils.compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
-                                               r["class_ids"], r["scores"], r['masks'])
-                mAPs.append(AP)        
-
-            return np.array(mAPs)
+        
+        mAPs = []
+        # Use a random subset of the data when a limit is defined
+        np.random.shuffle(self.dataset_image_ids)       
+        futures = []
+        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
+            future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
+            futures.append(future)
+        results = ray.get(futures)      
+        for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
+            future = process_image.remote(image, self.inference_model)
+            r = ray.get(future)
+            # Compute mAP - VOC uses IoU 0.5
+            AP, _, _, _ = compute_ap_jit(gt_bbox, gt_class_id, gt_mask, r["rois"],
+                                           r["class_ids"], r["scores"], r['masks'])
+            mAPs.append(AP)        
+        return np.array(mAPs)
     def _calculate_mean_average_precision_gpu(self):
         mAPs = []
 
