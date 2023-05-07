@@ -32,17 +32,21 @@ from multiprocessing import Pool, Process, Queue, cpu_count
 import ray
 from tensorflow.keras.metrics import Precision
 from tqdm import tqdm
-# Requires TensorFlow 2.0+
-from distutils.version import LooseVersion
-assert LooseVersion(tf.__version__) >= LooseVersion("2.0")
+
 from tensorflow.keras.metrics import Accuracy
 tf.compat.v1.disable_eager_execution()
-import tensorflow.compat.v1 as tf_v1
+
 
 
 ############################################################
 #  Utility Functions
 ############################################################
+import tensorflow.keras.callbacks as callbacks
+class PrintPrecisionCallback(callbacks.Callback):
+    def on_batch_end(self, batch, logs=None):
+        if logs is not None:
+            print("Precision for batch {}: {:.4f}".format(batch, logs["precision"]))
+
 from tensorflow.keras import backend as K
 
 def smooth_l1(y_true, y_pred):
@@ -1232,9 +1236,11 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
 ############################################################
 import ray
 from typing import Tuple
-
-@ray.remote(num_cpus=None)
-def process_image_piece( image, mask, config, sub_batch_size):
+from concurrent.futures import ProcessPoolExecutor
+import concurrent
+import numpy as np
+@ray.remote(num_cpus=32)
+def process_image_piece( image, mask):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
 
     Returns:
@@ -1244,15 +1250,8 @@ def process_image_piece( image, mask, config, sub_batch_size):
         defined in MINI_MASK_SHAPE.
     """
     # Load image and mask
-
-    image, window, scale, padding, crop = utils.resize_image(
-        image,
-        min_dim=config.IMAGE_MIN_DIM/sub_batch_size,
-        min_scale=config.IMAGE_MIN_SCALE,
-        max_dim=config.IMAGE_MAX_DIM,
-        mode=config.IMAGE_RESIZE_MODE)
-    mask = utils.resize_mask(mask, scale, padding, crop)
-
+    # print("Batch Image shape: ", image.shape)
+    
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
     _idx = np.sum(mask, axis=(0, 1)) > 0
@@ -1261,17 +1260,14 @@ def process_image_piece( image, mask, config, sub_batch_size):
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
-    bbox = utils.extract_bboxes(mask)
     
     # Resize masks to smaller size to reduce memory usage
-    if config.USE_MINI_MASK:
-        mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
-    
 
-    
-    return image, mask, bbox, scale
+    return image, mask
 
-def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=32):
+
+
+def load_image_gt_ray(dataset, config, image_id, augmentation=None, sub_batch_size=8):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
     augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
         For example, passing imgaug.augmenters.Fliplr(0.5) flips images
@@ -1288,20 +1284,15 @@ def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=3
     # Load image and mask
     image = dataset.load_image(image_id)
     mask, class_ids = dataset.load_mask(image_id)
+    # print("Shape of Mask before: ", mask.shape)
     original_shape = image.shape
-    # Split image and mask into smaller pieces
-    pieces = []
-    image_pieces = np.array_split(image, sub_batch_size)
-    mask_pieces = np.array_split(mask, sub_batch_size, axis=-1)
-    
-    for i, (img_piece, mask_piece) in enumerate(zip(image_pieces, mask_pieces)):
-        pieces.append(process_image_piece.remote(img_piece, mask_piece, config, sub_batch_size))
-    # Retrieve processed pieces
-    results = ray.get(pieces)
-    images, masks, bboxes, scales = zip(*results)
-    active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
-    source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
-    active_class_ids[source_class_ids] = 1
+    image, window, scale, padding, crop = utils.resize_image(
+        image,
+        min_dim=config.IMAGE_MIN_DIM,
+        min_scale=config.IMAGE_MIN_SCALE,
+        max_dim=config.IMAGE_MAX_DIM,
+        mode=config.IMAGE_RESIZE_MODE)
+    mask = utils.resize_mask(mask, scale, padding, crop)
     if augmentation:
         import imgaug
 
@@ -1334,114 +1325,59 @@ def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=3
         assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
         # Change mask back to bool
         mask = mask.astype(np.bool)
+    # Split image and mask into smaller pieces
+    pieces = []
+    image_pieces = np.array_split(image, sub_batch_size)
+    mask_pieces = np.array_split(mask, sub_batch_size, axis=-1)
+    
+    for i, (img_piece, mask_piece) in enumerate(zip(image_pieces, mask_pieces)):
+        pieces.append(process_image_piece.remote(img_piece, mask_piece, config))
+
+    # Process results as they become available
+    images = []
+    masks = []
+
+    # Set the concurrency limit
+    concurrency_limit = 64
+
+    # Wait for the first batch of tasks
+    # ready_ids, remaining_ids = ray.wait(pieces, num_returns=concurrency_limit)
+    ready_ids, remaining_ids = ray.wait(pieces)
+    while len(ready_ids) > 0:
+        # Get the results of the completed tasks
+        results = ray.get(ready_ids)
+
+        # Process the results
+        for image, mask in results:
+            images.append(image)
+            masks.append(mask)
+
+
+        # Wait for the next batch of tasks
+        ready_ids, remaining_ids = ray.wait(remaining_ids, num_returns=min(concurrency_limit, len(remaining_ids)))
+
+
+    active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
+    source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
+    active_class_ids[source_class_ids] = 1
+    
     # Concatenate results
-    image = np.concatenate(images)
+    image = np.concatenate(images, axis=0)
     mask = np.concatenate(masks, axis=-1)
-    bboxes_r = np.concatenate(bboxes, axis=0)
-    # print("Original Shape: ", original_shape)
-    # print("Result Shape: ", image.shape)
+
     h, w = image.shape[:2]
     window = (0, 0, h, w)
-    scale = scales[0]
-
+    bbox = utils.extract_bboxes(mask)
+    # print("Shape of Mask after: ", mask.shape)
+    if config.USE_MINI_MASK:
+        mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
                                   window, scale, active_class_ids)
+    
+    return image, image_meta, class_ids, bbox, mask
 
-    return image, image_meta, class_ids, bboxes_r, mask
-
-
-
-
-def load_image_gt_gpu(dataset, config, image_id, augmentation=None, sub_batch_size=1):
-    """Load and return ground truth data for an image (image, mask, bounding boxes).
-    augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
-        For example, passing imgaug.augmenters.Fliplr(0.5) flips images
-        right/left 50% of the time.
-    Returns:
-    image: [height, width, 3]
-    shape: the original shape of the image before resizing and cropping.
-    class_ids: [instance_count] Integer class IDs
-    bbox: [instance_count, (y1, x1, y2, x2)]
-    mask: [height, width, instance_count]. The height and width are those
-        of the image unless use_mini_mask is True, in which case they are
-        defined in MINI_MASK_SHAPE.
-    """
-    # Load image and mask
-    tf.compat.v1.enable_eager_execution()
-    with tf.device(":/gpu"):
-        image = dataset.load_image(image_id)
-        mask, class_ids = dataset.load_mask(image_id)
-        original_shape = image.shape
-        image, window, scale, padding, crop = utils.resize_image(
-            image,
-            min_dim=config.IMAGE_MIN_DIM,
-            min_scale=config.IMAGE_MIN_SCALE,
-            max_dim=config.IMAGE_MAX_DIM,
-            mode=config.IMAGE_RESIZE_MODE)
-        mask = utils.resize_mask(mask, scale, padding, crop)
-
-        # Augmentation
-        if augmentation:
-            import imgaug
-
-            # Augmenters that are safe to apply to masks
-            # Some, such as Affine, have settings that make them unsafe, so always
-            # test your augmentation on masks
-            MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
-                               "Fliplr", "Flipud", "CropAndPad",
-                               "Affine", "PiecewiseAffine"]
-
-            def hook(images, augmenter, parents, default):
-                """Determines which augmenters to apply to masks."""
-                return augmenter.__class__.__name__ in MASK_AUGMENTERS
-
-            # Store shapes before augmentation to compare
-            image_shape = image.shape
-            mask_shape = mask.shape
-            # Make augmenters deterministic to apply similarly to images and masks
-            det = augmentation.to_deterministic()
-            image = det.augment_image(image)
-            # Change mask to np.uint8 because imgaug doesn't support np.bool
-            if mask_shape[-1] == 1 or mask_shape[-1] == 3:
-                mask = det.augment_image(mask.astype(np.uint8),
-                                             hooks=imgaug.HooksImages(activator=hook)) 
-            else:
-                mask = det.augment_images(mask.astype(np.uint8),
-                                             hooks=imgaug.HooksImages(activator=hook))
-            # Verify that shapes didn't change
-            assert image.shape == image_shape, "Augmentation shouldn't change image size"
-            assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
-            # Change mask back to bool
-            mask = mask.astype(np.bool)
-        
-        
-        # Get indices of nonzero columns in mask
-        _idx = tf.reduce_sum(tf.cast(mask, tf.int32), axis=(0, 1)) > 0
-        # Extract masked regions of mask and class_ids
-        mask = tf.boolean_mask(mask, _idx, axis=2)
-        class_ids = tf.boolean_mask(class_ids, _idx)
-        # mask.set_shape([config.IMAGE_MAX_DIM, config.IMAGE_MAX_DIM, config.MAX_GT_INSTANCES])
-        # Run the mask tensor in a session
-        mask_np = tf.identity(mask).numpy()
-        # Compute bounding boxes
-        bbox = utils.extract_bboxes(mask_np)
-        # Active classes
-        active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
-        source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
-        active_class_ids[source_class_ids] = 1
-        # Resize masks to smaller size to reduce memory usage
-        if config.USE_MINI_MASK:
-            mini_mask = utils.minimize_mask(bbox, mask_np, config.MINI_MASK_SHAPE)
-        else:
-            mini_mask = mask_np
-        # Image meta data
-        image_meta = compose_image_meta(image_id, original_shape, tf.shape(image),
-                                        window, scale, active_class_ids)
-        tf.compat.v1.disable_eager_execution()
-        return image, image_meta, class_ids, bbox, mini_mask
-
-def load_image_gt_worked(dataset, config, image_id, augmentation=None, sub_batch_size=1):
+def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=1):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
     augmentation: Optional. An imgaug (https://github.com/aleju/imgaug) augmentation.
         For example, passing imgaug.augmenters.Fliplr(0.5) flips images
@@ -2510,14 +2446,21 @@ class MaskRCNN(object):
             if 'gamma' not in w.name and 'beta' not in w.name]
         self.keras_model.add_loss(tf.add_n(reg_losses))
         from tensorflow.keras.losses import binary_crossentropy
-        
+        def precision(y_true, y_pred):
+            """Custom metric function to calculate precision."""
+            # y_true is a tensor of one-hot-encoded labels
+            # y_pred is a tensor of predicted probabilities
+            y_pred_pos = tf.keras.backend.round(tf.keras.backend.clip(y_pred, 0, 1))
+            true_positives = tf.keras.backend.sum(tf.keras.backend.round(y_true * y_pred_pos))
+            predicted_positives = tf.keras.backend.sum(y_pred_pos)
+            precision = true_positives / (predicted_positives + tf.keras.backend.epsilon())
+            return precision
         # Compile
         self.keras_model.compile(
             optimizer=optimizer,
             loss=[None] * len(self.keras_model.outputs),
-
-            # loss=[None] * len(self.keras_model.outputs)
-            )
+            metrics=[precision]
+        )
 
         # Add metrics for losses
         for name in loss_names:
@@ -2529,6 +2472,7 @@ class MaskRCNN(object):
                 tf.reduce_mean(input_tensor=layer.output, keepdims=True)
                 * self.config.LOSS_WEIGHTS.get(name, 1.))
             self.keras_model.add_metric(loss, name=name, aggregation='mean')
+
 
     def set_trainable(self, layer_regex, keras_model=None, indent=0, verbose=1):
         """Sets model layers as trainable if their names match the given regular expression."""
@@ -2682,7 +2626,7 @@ class MaskRCNN(object):
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
                                             verbose=0, save_weights_only=True),
-            model_checkpoint_callback
+            PrintPrecisionCallback(),
         ]
 
         # Add custom callbacks to the list
