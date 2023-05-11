@@ -35,13 +35,13 @@ from tensorflow.keras.metrics import Precision
 from tqdm import tqdm
 
 from tensorflow.keras.metrics import Accuracy
+
 tf.compat.v1.disable_eager_execution()
-
-
 ############################################################
 #  Utility Functions
 ############################################################
-class TorchDataGeneratorSequence(keras.utils.Sequence):
+
+class TorchDataGeneratorSequence(KU.Sequence):
     def __init__(self, torch_data_generator):
         self.torch_data_generator = torch_data_generator
 
@@ -53,15 +53,7 @@ class TorchDataGeneratorSequence(keras.utils.Sequence):
         x = [t for t in x]
         y = [t for t in y]
         return x, y
-import tensorflow.keras.callbacks as callbacks
 
-class PrintPrecisionCallback(callbacks.Callback):
-    def on_epoch_end(self, epoch, logs=None):
-        if logs is not None and 'precision' in logs:
-            print("Precision for epoch {}: {:.4f}".format(epoch + 1, logs["precision"]))
-        else:
-            print("Precision not found!")
-from tensorflow.keras import backend as K
 
 def smooth_l1(y_true, y_pred):
     """Compute smooth L1 loss.
@@ -2275,7 +2267,6 @@ class MaskRCNN(object):
         self.model_dir = model_dir
         self.set_log_dir()
         self.keras_model = self.build(mode=mode, config=config)
-
     
 
     def build(self, mode, config):
@@ -2383,6 +2374,7 @@ class MaskRCNN(object):
                 def get_config(self) :
                     config = super(AnchorsLayer, self).get_config()
                     return config
+
  
             anchor_layer = AnchorsLayer(name="anchors")
             anchors = anchor_layer(anchors)
@@ -2516,7 +2508,6 @@ class MaskRCNN(object):
             model = ParallelModel(model, config.GPU_COUNT)
 
         return model
-
     def find_last(self):
         """Finds the last checkpoint file of the last trained model in the
         model directory.
@@ -2651,7 +2642,6 @@ class MaskRCNN(object):
                 tf.reduce_mean(input_tensor=layer.output, keepdims=True)
                 * self.config.LOSS_WEIGHTS.get(name, 1.))
             self.keras_model.add_metric(loss, name=name, aggregation='mean')
-
     def set_trainable(self, layer_regex, keras_model=None, indent=0, verbose=1):
         """Sets model layers as trainable if their names match the given regular expression."""
         # Print message on the first call (but not on recursive calls)
@@ -2723,14 +2713,6 @@ class MaskRCNN(object):
             self.config.NAME.lower()))
         self.checkpoint_path = self.checkpoint_path.replace(
             "*epoch*", "{epoch:04d}")
-    def accuracy_callback(self, epoch, logs):
-        self.accuracy.reset_states()
-        for batch in self.data_generator:
-            inputs, outputs = batch
-            y_true = outputs[:5]
-            y_pred = self.keras_model.predict(inputs)
-            self.accuracy.update_state(y_true, y_pred)
-        logs['accuracy'] = self.accuracy.result()
     def train(self, train_dataset, val_dataset, learning_rate, epochs, layers,
               augmentation=None, custom_callbacks=None, no_augmentation_sources=None):
         """Train the model.
@@ -2789,22 +2771,11 @@ class MaskRCNN(object):
         # Create log_dir if it does not exist
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
-
-        # Calculate the accuracy
-        model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-                filepath=self.checkpoint_path,
-                save_weights_only=True,
-                monitor='val_accuracy',
-                mode='max',
-                save_best_only=True)
         
         # Callbacks
         callbacks = [
-            keras.callbacks.TensorBoard(log_dir=self.log_dir,
-                                        histogram_freq=0, write_graph=True, write_images=False),
-            keras.callbacks.ModelCheckpoint(self.checkpoint_path,
-                                            verbose=0, save_weights_only=True),
-            PrintPrecisionCallback(),
+            tf.keras.callbacks.ModelCheckpoint(self.checkpoint_path,
+                                            verbose=1, save_weights_only=True)
         ]
 
         # Add custom callbacks to the list
@@ -2816,8 +2787,8 @@ class MaskRCNN(object):
         log("\nStarting at epoch {}. LR={}\n".format(self.epoch, learning_rate))
         log("Checkpoint Path: {}".format(self.checkpoint_path))
         self.set_trainable(layers)
+        
         self.compile(learning_rate, self.config.LEARNING_MOMENTUM)
-
         # Work-around for Windows: Keras fails on Windows when using
         # multiprocessing workers. See discussion here:
         # https://github.com/matterport/Mask_RCNN/issues/13#issuecomment-353124009
@@ -2825,7 +2796,7 @@ class MaskRCNN(object):
             workers = 0
         else:
             workers = cpu_count()
-
+        
         self.keras_model.fit(
             train_generator,
             initial_epoch=self.epoch,
@@ -2835,7 +2806,7 @@ class MaskRCNN(object):
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
             max_queue_size=100,
-            workers=1,
+            workers=workers,
             use_multiprocessing=False,
         )
         self.epoch = max(self.epoch, epochs)
@@ -3155,7 +3126,7 @@ class MaskRCNN(object):
         inputs = model.inputs
         if model.uses_learning_phase and not isinstance(K.learning_phase(), int):
             inputs += [K.learning_phase()]
-        kf = K.function(model.inputs, list(outputs.values()))
+        kf = K.function(inputs, list(outputs.values()))
 
         # Prepare inputs
         if image_metas is None:
@@ -3181,6 +3152,7 @@ class MaskRCNN(object):
         for k, v in outputs_np.items():
             log(k, v)
         return outputs_np
+
 
 
 ############################################################
@@ -3315,38 +3287,15 @@ def norm_boxes_graph(boxes, shape):
     h, w = tf.split(tf.cast(shape, tf.float32), 2)
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
     shift = tf.constant([0., 0., 1., 1.])
+    # boxes = tf.cast(boxes, tf.float32) # cast boxes to float32
     return tf.divide(boxes - shift, scale)
 
-import numba as nb
+def norm_boxes_graph2(x):
+    boxes,tensor_for_shape = x
+    shape = tf.shape(tensor_for_shape)[1:3]
+    return norm_boxes_graph(boxes,shape)
 
-@nb.jit(nopython=True, parallel=True)
-def compute_ap_jit(gt_boxes, gt_class_ids, gt_masks,
-                   pred_boxes, pred_class_ids, pred_scores, pred_masks,
-                   iou_threshold=0.5):
-    # Get matches and overlaps
-    gt_match, pred_match, overlaps = compute_matches(
-        gt_boxes, gt_class_ids, gt_masks,
-        pred_boxes, pred_class_ids, pred_scores, pred_masks,
-        iou_threshold)
 
-    # Compute precision and recall at each prediction box step
-    precisions = np.cumsum(pred_match > -1) / (np.arange(len(pred_match)) + 1)
-    recalls = np.cumsum(pred_match > -1).astype(np.float32) / len(gt_match)
-
-    # Pad with start and end values to simplify the math
-    precisions = np.concatenate([[0], precisions, [0]])
-    recalls = np.concatenate([[0], recalls, [1]])
-
-    # Ensure precision values decrease but don't increase
-    for i in nb.prange(len(precisions) - 2, -1, -1):
-        precisions[i] = np.maximum(precisions[i], precisions[i + 1])
-
-    # Compute mean AP over recall range
-    indices = np.where(recalls[:-1] != recalls[1:])[0] + 1
-    mAP = np.sum((recalls[indices] - recalls[indices - 1]) *
-                 precisions[indices])
-
-    return mAP, precisions, recalls, overlaps
 
 def denorm_boxes_graph(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
@@ -3364,86 +3313,6 @@ def denorm_boxes_graph(boxes, shape):
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)
 
-from tensorflow.keras.callbacks import Callback
-@ray.remote(num_cpus=None)
-def process_image(image, inference_model):
-    molded_images = np.expand_dims(mold_image(image, inference_model.config), 0)
-    results = inference_model.detect(molded_images, verbose=1)
-    r = results[0]
-    return r
 
-class MeanAveragePrecisionCallback(Callback):
-    def __init__(self, train_model: MaskRCNN, inference_model: MaskRCNN, dataset: Dataset,
-                 calculate_map_at_every_X_epoch=5, dataset_limit=None,
-                 verbose=1):
-        
-        
-        
-        super().__init__()
-        self.train_model = train_model
-        self.inference_model = inference_model
-        self.dataset = dataset
-        self.calculate_map_at_every_X_epoch = calculate_map_at_every_X_epoch
-        self.dataset_limit = len(self.dataset.image_ids)
-        if dataset_limit is not None:
-            self.dataset_limit = dataset_limit
-        self.dataset_image_ids = self.dataset.image_ids.copy()
 
-        self._verbose_print = print if verbose > 0 else lambda *a, **k: None
-    def on_epoch_end(self, epoch, logs=None):
-        
-        if epoch > 2 and (epoch+1)%self.calculate_map_at_every_X_epoch == 0:
-            self._verbose_print("Calculating mAP...")
-            self._verbose_print("Dataset Limit: ", self.dataset_limit)
-            self._load_weights_for_model()
-            try:
-                mAPs = self._calculate_mean_average_precision()
-                mAP = np.mean(mAPs)
-                if logs is not None:
-                    logs["val_mean_average_precision"] = mAP
-                self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
-            except Exception as e: self._verbose_print(e)
-        super().on_epoch_end(epoch, logs)
-
-    def _load_weights_for_model(self):
-        last_weights_path = self.train_model.find_last()
-        self._verbose_print("Loaded weights for the inference model (last checkpoint of the train model): {0}".format(
-            last_weights_path))
-        self.inference_model.load_weights(last_weights_path,
-                                          by_name=True)
-    def _calculate_mean_average_precision(self):
-        
-        mAPs = []
-        # Use a random subset of the data when a limit is defined
-        np.random.shuffle(self.dataset_image_ids)       
-        futures = []
-        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
-            future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
-            futures.append(future)
-        results = ray.get(futures)      
-        for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
-            future = process_image.remote(image, self.inference_model)
-            r = ray.get(future)
-            # Compute mAP - VOC uses IoU 0.5
-            AP, _, _, _ = compute_ap_jit(gt_bbox, gt_class_id, gt_mask, r["rois"],
-                                           r["class_ids"], r["scores"], r['masks'])
-            mAPs.append(AP)        
-        return np.array(mAPs)
-    def _calculate_mean_average_precision_gpu(self):
-        mAPs = []
-
-        # Use a random subset of the data when a limit is defined
-        np.random.shuffle(self.dataset_image_ids)
-
-        for image_id in self.dataset_image_ids[:self.dataset_limit]:
-            image, image_meta, gt_class_id, gt_bbox, gt_mask = load_image_gt(self.dataset, self.inference_model.config,
-                                                                             image_id, use_mini_mask=False)
-            molded_images = np.expand_dims(mold_image(image, self.inference_model.config), 0)
-            results = self.inference_model.detect(molded_images, verbose=0)
-            r = results[0]
-            # Compute mAP - VOC uses IoU 0.5
-            AP, _, _, _ = utils.compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
-                                           r["class_ids"], r["scores"], r['masks'])
-            mAPs.append(AP)
-
-        return np.array(mAPs)
+    
