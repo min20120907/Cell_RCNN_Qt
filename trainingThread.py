@@ -6,8 +6,6 @@ import skimage.io
 import imgaug.augmenters as iaa
 import skimage
 import time
-import logging
-logging.getLogger('tensorflow').disabled = True
 #PyQt5 Dependencies
 from PyQt5 import QtCore
 #UI
@@ -16,33 +14,30 @@ import json
 from tqdm import tqdm
 import json
 import ray
-
+from mrcnn import model as modellib, utils
 import tensorflow.keras as keras
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 from solve_cudnn_error import *
 from multiprocessing import Pool, cpu_count
-import psutil
+# from mrcnn.MeanAveragePrecisionCallback import MeanAveragePrecisionCallback
+from tensorflow.keras import backend as K
 
-ray.init(
-    _system_config={
-        "object_spilling_config": json.dumps(
-            {
-              "type": "filesystem",
-              "params": {
-                # Multiple directories can be specified to distribute
-                # IO across multiple mounted physical devices.
-                "directory_path": [
-                  "/mnt/800GB-DISK-1/ray/spill",
-                  "/mnt/8TB-DISK-4/tmp/ray/spill",
-                ],
-                "buffer_size": 1_000_000,
-              },
-            }
-        ),
-    },
-    ignore_reinit_error=True, object_store_memory=2.5*1024**3,_memory=32*1024**3, num_cpus=None, num_gpus=1
-)
+# # Set number of intra-op and inter-op parallelism threads
+# tf.config.threading.set_intra_op_parallelism_threads(32)
+# tf.config.threading.set_inter_op_parallelism_threads(32)
+# 
+# # Allow GPU memory growth
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# if gpus:
+#     try:
+#         for gpu in gpus:
+#             tf.config.experimental.set_memory_growth(gpu, True)
+#     except RuntimeError as e:
+#         print(e)
+# 
+# # Set Keras session to the current TensorFlow session
+# tf.compat.v1.keras.backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto()))
+
 
 def generate_mask_subset(args):
     height, width, subset = args
@@ -96,7 +91,84 @@ def load_annotations(annotation, subset_dir, class_id):
 
     return images
 
+class CustomDataset(utils.Dataset):
 
+    def load_custom(self, dataset_dir, subset):
+        """Load a subset of the bottle dataset.
+        dataset_dir: Root directory of the dataset.
+        subset: Subset to load: train or val
+        """
+        # Add classes. We have only one class to add.
+        self.add_class("cell", 1, "cell")
+        self.add_class("cell", 2, "chromosome")
+        self.add_class("cell", 3, "nuclear")
+        # Train or validation dataset?
+        assert subset in ["train", "val"]
+        subset_dir = os.path.join(dataset_dir, subset)
+
+        def to_iterator(obj_ids):
+            while obj_ids:
+                done, obj_ids = ray.wait(obj_ids)
+                yield ray.get(done[0])
+        
+        # Load annotations from all JSON files using Ray multiprocessing
+        annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
+        futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
+                    [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
+                    [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+        # Showing the progressbar
+        for _ in tqdm(to_iterator(futures), total=len(futures)):
+            pass
+        results = ray.get(futures)
+        
+
+        # Add images
+        for images in results:
+            for image in images:
+                self.add_image(
+                    'cell',
+                    image_id=image['image_id'],  # use file name as a unique image id
+                    path=image['path'],
+                    width=image['width'], height=image['height'],
+                    polygons=image['polygons'],
+                    num_ids=image['num_ids'])
+        
+        
+
+    def load_mask(self, image_id):
+        """Generate instance masks for an image.
+        Returns:
+        masks: A bool array of shape [height, width, instance count] with
+            one mask per instance.
+        class_ids: a 1D array of class IDs of the instance masks.
+        """
+
+        # Convert polygons to a bitmap mask of shape
+        # [height, width, instance_count]
+        info = self.image_info[image_id]
+        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+                        dtype=np.uint8)
+        for i, p in enumerate(info["polygons"]):
+            # Get indexes of pixels inside the polygon and set them to 1
+            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
+            # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
+            try:
+                mask[rr, cc, i] = 1
+            except:
+                rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
+                cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
+                mask[rr, cc, i] = 1
+                # print("Error Occured")
+                # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
+        # Return mask, and array of class IDs of each instance. Since we have
+        # one class ID only, we return an array of 1s
+        return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
+
+
+    def image_reference(self, image_id):
+        """Return the path of the image."""
+        info = self.image_info[image_id]
+        return info["path"]
 
 class trainingThread(QtCore.QThread):
     def __init__(self, parent=None, test=0, epoches=100,
@@ -113,6 +185,24 @@ class trainingThread(QtCore.QThread):
     update_training_status = QtCore.pyqtSignal(str)
     
     def run(self):
+        ray.init(
+        _system_config={
+            "object_spilling_config": json.dumps(
+                {
+                  "type": "filesystem",
+                  "params": {
+                    # Multiple directories can be specified to distribute
+                    # IO across multiple mounted physical devices.
+                    "directory_path": [
+                      "/mnt/800GB-DISK-1/ray/spill",
+                    ]
+                  },
+                }
+            ),
+        },
+        ignore_reinit_error=True, 
+        object_store_memory=10*1024**3,_memory=32*1024**3,
+        )
         # Get the physical devices and set memory growth for GPU devices
         physical_devices = tf.config.list_physical_devices('GPU')
         if len(physical_devices) > 0:
@@ -127,7 +217,7 @@ class trainingThread(QtCore.QThread):
         # Import Mask RCNN
         sys.path.append(ROOT_DIR)  # To find local version of the library
         from mrcnn.config import Config
-        from mrcnn import model as modellib, utils
+        from mrcnn import utils
 
         # Path to trained weights file
         COCO_WEIGHTS_PATH = os.path.join(self.weight_path)
@@ -140,7 +230,7 @@ class trainingThread(QtCore.QThread):
         #  Configurations
         ############################################################
 
-
+        
         class CustomConfig(Config):
             """Configuration for training on the toy  dataset.
             Derives from the base Config class and overrides some values.
@@ -161,7 +251,7 @@ class trainingThread(QtCore.QThread):
             STEPS_PER_EPOCH = self.epoches
 
             # Backbone network architecture
-            BACKBONE = "resnet50"
+            BACKBONE = "resnet101"
 
             # Number of validation steps per epoch
             VALIDATION_STEPS = 50
@@ -171,82 +261,7 @@ class trainingThread(QtCore.QThread):
         #  Dataset
         ############################################################
 
-        class CustomDataset(utils.Dataset):
-
-            def load_custom(self, dataset_dir, subset):
-                """Load a subset of the bottle dataset.
-                dataset_dir: Root directory of the dataset.
-                subset: Subset to load: train or val
-                """
-                # Add classes. We have only one class to add.
-                self.add_class("cell", 1, "cell")
-                self.add_class("cell", 2, "chromosome")
-                self.add_class("cell", 3, "nuclear")
-                # Train or validation dataset?
-                assert subset in ["train", "val"]
-                subset_dir = os.path.join(dataset_dir, subset)
-
-                def to_iterator(obj_ids):
-                    while obj_ids:
-                        done, obj_ids = ray.wait(obj_ids)
-                        yield ray.get(done[0])
-                
-                # Load annotations from all JSON files using Ray multiprocessing
-                annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
-                futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
-                          [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
-                          [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
-                # Showing the progressbar
-                for _ in tqdm(to_iterator(futures), total=len(futures)):
-                    pass
-                results = ray.get(futures)
-                
-
-                # Add images
-                for images in results:
-                    for image in images:
-                        self.add_image(
-                            'cell',
-                            image_id=image['image_id'],  # use file name as a unique image id
-                            path=image['path'],
-                            width=image['width'], height=image['height'],
-                            polygons=image['polygons'],
-                            num_ids=image['num_ids'])
-
-            def load_mask(self, image_id):
-                """Generate instance masks for an image.
-               Returns:
-                masks: A bool array of shape [height, width, instance count] with
-                    one mask per instance.
-                class_ids: a 1D array of class IDs of the instance masks.
-                """
-
-                # Convert polygons to a bitmap mask of shape
-                # [height, width, instance_count]
-                info = self.image_info[image_id]
-                mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                                dtype=np.uint8)
-                for i, p in enumerate(info["polygons"]):
-                    # Get indexes of pixels inside the polygon and set them to 1
-                    rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-                    # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-                    try:
-                        mask[rr, cc, i] = 1
-                    except:
-                        rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
-                        cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
-                        mask[rr, cc, i] = 1
-                        # print("Error Occured")
-                        # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-                # Return mask, and array of class IDs of each instance. Since we have
-                # one class ID only, we return an array of 1s
-                return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
-
-
-            def image_reference(self, image_id):
-                """Return the path of the image."""
-                info = self.image_info[image_id]
-                return info["path"]
+        
 
 
 
@@ -285,17 +300,18 @@ class trainingThread(QtCore.QThread):
                         iaa.AdditiveGaussianNoise(scale=(0, 0.05*255)), # 添加高斯噪聲，噪聲標準差為0到0.05的像素值
                         iaa.LinearContrast((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
                         ]))
-            
+            # tf.compat.v1.enable_eager_execution()
             # add callback to calculate the result of accuracy
-            mean_average_precision_callback = modellib.MeanAveragePrecisionCallback(model,
-               model_inference, dataset_val, calculate_map_at_every_X_epoch=1, verbose=1)
+            
+            # mean_average_precision_callback = MeanAveragePrecisionCallback(model,
+            #   model_inference, dataset_val, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
             
             self.update_training_status.emit("Training network heads")
             model.train(dataset_train, dataset_val,
                         learning_rate=config.LEARNING_RATE,
                         epochs=int(self.steps),
                         layers='heads',
-                        custom_callbacks=[mean_average_precision_callback],
+                        # custom_callbacks=[mean_average_precision_callback],
                         augmentation = aug,
                         )
            
@@ -318,103 +334,11 @@ class trainingThread(QtCore.QThread):
         
         print("Loading Inference Configuration...")
         class InferenceConfig(CustomConfig):
-            # Give the configuration a recognizable name
-            NAME = "cell_inference"
-
             # Number of GPUs to use for inference
             GPU_COUNT = 1
             # Number of images to process on each GPU
             IMAGES_PER_GPU = 1
-
-            # Backbone network architecture
-            BACKBONE = "resnet101"
-
-            # Size of image channels
-            IMAGE_CHANNEL_COUNT = 3
-
-            # Mean pixel values for image normalization
-            MEAN_PIXEL = [123.7, 116.8, 103.9]
-
-            # Resize mode for image resizing
-            IMAGE_RESIZE_MODE = "square"
-
-            # Maximum dimension of image
-            IMAGE_MAX_DIM = 1024
-
-            # Minimum dimension of image
-            IMAGE_MIN_DIM = 768
-
-            # Scale factor for image pyramid
-            IMAGE_MIN_SCALE = 0
-
-            # Shape of input image
-            IMAGE_SHAPE = [1024, 1024, 3]
-
-            # Size of image meta data
-            IMAGE_META_SIZE = 16
-
-            # Anchor scales for the Region Proposal Network (RPN)
-            RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
-
-            # Anchor ratios for the RPN
-            RPN_ANCHOR_RATIOS = [0.5, 1, 2]
-
-            # Anchor stride for the RPN
-            RPN_ANCHOR_STRIDE = 1
-
-            # Number of anchors used in training
-            RPN_TRAIN_ANCHORS_PER_IMAGE = 256
-
-            # Max number of ground truth instances to use in one image
-            MAX_GT_INSTANCES = 100
-
-            # Max number of detection instances to use in one image
-            DETECTION_MAX_INSTANCES = 100
-
-            # Minimum probability for a detection to be considered positive
-            DETECTION_MIN_CONFIDENCE = 0.7
-
-            # Non-maximum suppression threshold for detection
-            DETECTION_NMS_THRESHOLD = 0.3
-
-            # Size of mask pool
-            MASK_POOL_SIZE = 14
-
-            # Size of mask shape
-            MASK_SHAPE = [28, 28]
-
-            # Size of minimum mask shape
-            MINI_MASK_SHAPE = (56, 56)
-
-            # Positive fraction of ROI proposals used in training
-            ROI_POSITIVE_RATIO = 0.33
-
-            # Size of top-down pyramid in pixels
-            TOP_DOWN_PYRAMID_SIZE = 256
-
-            # Number of fully connected layers in the classification head
-            FPN_CLASSIF_FC_LAYERS_SIZE = 1024
-
-            # Size of pooling region in the mask head
-            POOL_SIZE = 7
-
-            # Whether to use batch normalization in training
-            TRAIN_BN = False
-
-            # Whether to use mini masks
-            USE_MINI_MASK = True
-
-            # Whether to use RPN ROIs
-            USE_RPN_ROIS = True
-
-            # Loss weights for different components
-            LOSS_WEIGHTS = {
-                "rpn_class_loss": 1.0,
-                "rpn_bbox_loss": 1.0,
-                "mrcnn_class_loss": 1.0,
-                "mrcnn_bbox_loss": 1.0,
-                "mrcnn_mask_loss": 1.0,
-            }
+            USE_MINI_MASK = False
 
         model_inference = modellib.MaskRCNN(mode="inference", config=InferenceConfig(),
                                  model_dir=self.WORK_DIR+"/logs")
@@ -432,6 +356,7 @@ class trainingThread(QtCore.QThread):
             "mrcnn_bbox", "mrcnn_mask"])
         # Train or evaluate
         train(model, model_inference)
+        ray.shutdown()
         #while(True):
         #    time.sleep(2)
         #    self.update_training_status.emit('training' + str(self.test))

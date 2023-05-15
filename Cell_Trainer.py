@@ -1,7 +1,6 @@
-# import warnings filter
-from warnings import simplefilter
-# ignore all future warnings
-simplefilter(action='ignore', category=FutureWarning)
+import ray
+import json
+
 import batchDetectThread
 import batch_cocoThread
 import batch_cocoShrinkThread
@@ -12,7 +11,6 @@ import detectingThread
 import trainingThread
 import imgseq_thread
 from os.path import dirname
-import json
 from datetime import datetime
 from main_ui import Ui_MainWindow
 from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog
@@ -205,7 +203,7 @@ class Cell(QMainWindow, Ui_MainWindow):
         self.myThread = QtCore.QThread()
         self.thread = detectingThread.detectingThread(DETECT_PATH=self.DETECT_PATH, ROI_PATH=self.ROI_PATH, txt=self.format_txt.toPlainText(
         ), weight_path=self.weight_path, dataset_path=self.dataset_path, WORK_DIR=self.WORK_DIR,DEVICE=self.DEVICE,conf_rate=self.conf_rate.toPlainText(),
-        epoches=self.epochs.toPlainText(),step=self.steps.toPlainText(), confidence=self.confidence )
+        epoches=self.epochs.toPlainText(),step=self.steps.toPlainText())
         self.thread.append.connect(self.append)
         self.thread.moveToThread(self.myThread)
         self.myThread.started.connect(self.thread.run)
@@ -331,7 +329,6 @@ class Cell(QMainWindow, Ui_MainWindow):
 
 
 if __name__ == "__main__":
-
     app = QApplication(sys.argv)
     window = Cell()
     window.show()
