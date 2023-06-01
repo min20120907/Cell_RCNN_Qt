@@ -151,7 +151,7 @@ class EvalImage():
             # Load image and ground truth data
             image, image_meta, gt_class_id, gt_bbox, gt_mask =\
                 modellib.load_image_gt(dataset_val, self.cfg,
-                                       dataset_val.images_ids[image_id])
+                                       dataset_val.image_ids[image_id])
             molded_images = np.expand_dims(modellib.mold_image(image, self.cfg), 0)
             # make prediction
             results = self.model.detect([image], verbose=0)
