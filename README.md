@@ -38,7 +38,12 @@ LD_PRELOAD="/usr/lib-linux-gnu/libtcmalloc_minimal.so.4"
 
 If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
 
-The usage of new "coco_convert_gpt.py" usage:
+The usage of new "coco_convert_gpt.py":
 ```
 python coco_convert_gpt.py --append_mode --coco_path '/SSD-1TB-GEN4/dataset-png/train/FIB-SEM of a dividing cell at 3.9 min after anaphase' --zips_path '/SSD-1TB-GEN4/dataset-png/train/FIB-SEM of a dividing cell at 3.9 min after anaphase/single-2000-2200-RoiSet.zip' --mode single  --txt .tif
+```
+
+The usage of evaluation:
+```
+python eval_model.py --dataset /SSD-1TB-GEN4/dataset-png/ --workdir . --weight_path logs/cell20230527T1017/mask_rcnn_cell_0024.h5
 ```
