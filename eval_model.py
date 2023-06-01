@@ -161,8 +161,6 @@ class EvalImage():
                 compute_ap(gt_bbox, gt_class_id, gt_mask,\
                             r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0)
 
-            if AP==0:
-                AP=1
             print("AP:", AP)
             # print("Precision:", precisions)
             # print("Recall:", recalls)
