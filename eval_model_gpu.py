@@ -6,12 +6,15 @@ from tqdm import tqdm
 import skimage
 import matplotlib.pyplot as plt
 import tensorflow as tf
-import tensorflow.keras as keras
 import ray
+import cv2
 from mrcnn.config import Config
-from mrcnn.utils import compute_ap, Dataset
+from mrcnn.utils import compute_ap, Dataset, compute_iou
 import mrcnn.model as modellib
-from concurrent.futures import ThreadPoolExecutor
+from sklearn.metrics import precision_score
+
+import matplotlib.patches as patches
+from skimage import measure
 # Limit GPU memory growth
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -22,7 +25,40 @@ if gpus:
         print(e)
 
 # Function to generate masks on CPU
+
+
 @ray.remote
+def generate_mask_subsea(args):
+    height, width, subset = args
+    with tf.device("/cpu:0"):
+        mask = np.zeros([height, width, len(subset)], dtype=np.uint8)
+        for i, j in enumerate(range(subset[0], subset[1])):
+            start = subset[j]['all_points'][:-1]
+            rr, cc = skimage.draw.polygon(start[:, 1], start[:, 0])
+            mask[rr, cc, i] = 1
+    return mask
+
+
+def convert_to_2d_list(nested_list):
+    """Converts a nested list to a list of lists.
+
+    Args:
+      nested_list: A nested list to convert.
+
+    Returns:
+      A list of lists.
+    """
+
+    flat_list = []
+    for sublist in nested_list:
+        flat_list.extend(sublist)
+
+    # Convert the flat list to a 2D list.
+    list_of_lists = np.array(flat_list).reshape((-1, 2))
+
+    return list_of_lists
+
+
 def generate_mask_subset(args):
     height, width, subset = args
     mask = np.zeros([height, width, len(subset)], dtype=np.uint8)
@@ -32,34 +68,88 @@ def generate_mask_subset(args):
         mask[rr, cc, i] = 1
     return mask
 
-def plot_iou_precision_recall(iou_thresholds, precisions_list, recalls_list, title="IoU/Precision/Recall"):
-    plt.figure()
-    plt.title(title)
+
+def convert_to_polygon_dict(polygon):
+    """Converts a polygon to a dictionary with the keys "all_points_x" and "all_points_y".
+
+    Args:
+      polygon: A numpy array of the polygon points.
+
+    Returns:
+      A dictionary with the keys "all_points_x" and "all_points_y".
+    """
+
+    polygon_dict = {}
+    polygon_dict["all_points_x"] = polygon[:, 0]
+    polygon_dict["all_points_y"] = polygon[:, 1]
+
+    return polygon_dict
+
+def crop_by_polygon(img, polygon):
+    # Compute the center of the polygon
+    center = np.mean(polygon, axis=0)
+    crop_size = (256,256)
+    center[0] = int(center[0])
+    center[1] = int(center[1])
+    top_left = ()
+    # Compute the distances from the center to the image borders
+    # d_right_bottom = (img.shape[0]-center[0], img.shape[1]-center[1])
+    # if(d_right_bottom[0]>128 and d_right_bottom[1]>128):
+    #     top_left = center - 128
+    # elif(d_right_bottom[0]<=128 and d_right_bottom[1]>128):
+    #     top_left = (center[0] - 256 + img.shape[0], center[1] - 128)
+    # elif(d_right_bottom[0]>128 and d_right_bottom[1]<=128):
+    #     top_left = (center[0]-128, center[1]-256+img.shape[1])
+    # else:
+    #     top_left = (center[0] - 256 + img.shape[0], center[1] - 256 + img.shape[1])
+    # Calculate the bounding box of the polygon
+    bbox = np.array([polygon[:, 0].min(), polygon[:, 1].min(), polygon[:, 0].max(), polygon[:, 1].max()])
+  
+    top_left = (min(bbox[0], img.shape[1] - crop_size[0]), min(bbox[1], img.shape[0] - crop_size[1]))
+    # Adjust the size of the cropped area to cover the entire bounding box
     
-    # Plot precision and recall curves for each IoU threshold
-    for iou_threshold, precisions, recalls in zip(iou_thresholds, precisions_list, recalls_list):
-        plt.plot(recalls, precisions, label="IoU Threshold: {}".format(iou_threshold))
+    
+    # Crop the image
+    new_img = img[int(top_left[1]):int(top_left[1]+crop_size[1]), int(top_left[0]):int(top_left[0]+crop_size[0])]
+    
+    # Check if the new image is of size 256x256
+    assert new_img.shape == (256, 256,3), "The shape of the new image is not 256x256, but "+str(new_img.shape)+" top_left: "+str(top_left)
 
-        # Add dots to the curve
-        plt.scatter(recalls, precisions, marker='o')
+    # Update the polygon coordinates
+    new_polygon = polygon-(min(list(map(list, zip(*polygon)))[0]), min(list(map(list, zip(*polygon)))[1]))
+    new_polygon = new_polygon.clip(min=0, max=255)
+    # Check if the new polygon coordinates are within the new image boundaries
+    assert np.all(new_polygon >= 0) and np.all(new_polygon[:, 0] < 256) and np.all(new_polygon[:, 1] < 256), "The new polygon coordinates are out of the new image boundaries: "+str(new_polygon)
+    
+    return new_img, new_polygon
 
-    # Set limits and labels
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.ylim([0, 1])
-    plt.xlim([0, 1])
+def remove_file_extension(filename):
+    """Removes the file extension from a filename, even if the filename might have multiple dots.
 
-    # Add legend and show plot
-    plt.legend()
-    plt.show()
+    Args:
+      filename: The filename to remove the file extension from.
+
+    Returns:
+      A string containing the filename without the file extension.
+    """
+
+    # Split the filename at the last dot.
+    filename_parts = filename.rsplit('.', 1)
+
+    # If the filename has multiple dots, the last part will be the file extension.
+    if len(filename_parts) == 2:
+        return filename_parts[0]
+    else:
+        return filename
+
 
 @ray.remote
 def load_annotations(annotation, subset_dir, class_id):
     # Load annotations from JSON file
     annotations = json.load(open(os.path.join(subset_dir, annotation)))
-    annotations = list(annotations.values()) 
+    annotations = list(annotations.values())
     annotations = [a for a in annotations if a['regions']]
-
+    output_dir = "/home/e814/Documents/dataset-256"
     # Add images
     images = []
     for a in annotations:
@@ -82,33 +172,72 @@ def load_annotations(annotation, subset_dir, class_id):
         # Unfortunately, VIA doesn't include it in JSON, so we must read
         # the image. This is only manageable since the dataset is tiny.
         image_path = os.path.join(subset_dir, a['filename'])
-        image = skimage.io.imread(image_path)
-        height, width = image.shape[:2]
+        image = cv2.imread(image_path)
 
-        images.append({
-            'image_id': a['filename'],  # use file name as a unique image id
-            'path': image_path,
-            'width': width,
-            'height': height,
-            'polygons': polygons,
-            'num_ids': num_ids
-        })
+        height, width = image.shape[:2]
+        # Crop the image to each polygon and save the cropped images to NumPy arrays.
+        cropped_images = []
+        for polygon in polygons:
+            polygon = np.array([
+                [polygon['all_points_x'][i], polygon['all_points_y'][i]]
+                for i in range(len(polygon['all_points_x']))
+            ])
+            # print(polygon)
+            cropped_image =None
+            
+            cropped_image, cropped_polygon = crop_by_polygon(
+                image, polygon)
+            
+            # print(cropped_image.shape)
+            if cropped_image is not None:
+                cropped_images.append(
+                    (cropped_image, cropped_polygon))
+
+        # Add the cropped images to the image dictionary.
+        cropped_image_dictionaries = []
+        polygon_id = 0
+        for cropped_image, cropped_polygon in cropped_images:
+            print(cropped_image.shape)
+            try:
+                os.mkdir(os.path.join(
+                    output_dir, os.path.dirname(a['filename'])))
+            except:
+                pass
+            try:
+                os.mkdir(os.path.join(
+                    output_dir, remove_file_extension(a['filename'])))
+            except:
+                pass
+            output_filename = os.path.join(
+                output_dir, f"{remove_file_extension(a['filename'])}/{polygon_id}.png")
+            polygon_id += 1
+            if cropped_image.size:
+                try:
+                    if not os.path.isfile(output_filename):
+                        cv2.imwrite(output_filename, cropped_image)
+                except:
+                    continue
+
+            # continue
+            # print([calculate_new_polygon_coordinates(polygon, cropped_image.shape[:2])])
+            # print(new_polygons)
+            cropped_image_dictionary = {
+                'image_id': output_filename,
+                'path': output_filename,
+                'width': cropped_image.shape[1],
+                'height': cropped_image.shape[0],
+                'polygons': convert_to_polygon_dict(convert_to_2d_list(cropped_polygon)),
+                'num_ids': [class_id]
+            }
+            # print(cropped_image_dictionary)
+            cropped_image_dictionaries.append(cropped_image_dictionary)
+
+        # Add the cropped image dictionaries to the list of images.
+        images.extend(cropped_image_dictionaries)
 
     return images
-def parallel_inference(image_ids, model, num_sessions=3):
-    def inference_worker(image_id):
-        image, image_meta, gt_class_id, gt_bbox, gt_mask =\
-            modellib.load_image_gt(dataset_val, cfg, image_id)
-        molded_images = np.expand_dims(modellib.mold_image(image, cfg), 0)
-        results = model.detect([image], verbose=0)
-        return results[0]
 
-    results = []
-    with ThreadPoolExecutor(max_workers=num_sessions) as executor:
-        futures = [executor.submit(inference_worker, image_id) for image_id in image_ids]
-        for future in tqdm(futures, total=len(futures), desc="Inference"):
-            results.append(future.result())
-    return results
+
 class CustomDataset(Dataset):
 
     def load_custom(self, dataset_dir, subset):
@@ -128,30 +257,30 @@ class CustomDataset(Dataset):
             while obj_ids:
                 done, obj_ids = ray.wait(obj_ids)
                 yield ray.get(done[0])
-        
+
         # Load annotations from all JSON files using Ray multiprocessing
-        annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
+        annotations = [f for f in os.listdir(subset_dir) if f.startswith(
+            "via_region_") and f.endswith(".json")]
         futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
-                    [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
-                    [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+            [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
+            [load_annotations.remote(a, subset_dir, 3)
+             for a in annotations if "nuclear_" in a]
         # Showing the progressbar
         for _ in tqdm(to_iterator(futures), total=len(futures)):
             pass
         results = ray.get(futures)
-        
 
         # Add images
         for images in results:
             for image in images:
                 self.add_image(
                     'cell',
-                    image_id=image['image_id'],  # use file name as a unique image id
+                    # use file name as a unique image id
+                    image_id=image['image_id'],
                     path=image['path'],
                     width=image['width'], height=image['height'],
                     polygons=image['polygons'],
                     num_ids=image['num_ids'])
-        
-        
 
     def load_mask(self, image_id):
         """Generate instance masks for an image.
@@ -164,169 +293,170 @@ class CustomDataset(Dataset):
         # Convert polygons to a bitmap mask of shape
         # [height, width, instance_count]
         info = self.image_info[image_id]
-        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+        mask = np.zeros([info["height"], info["width"], 1],
                         dtype=np.uint8)
-        for i, p in enumerate(info["polygons"]):
-            # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
+        p = info["polygons"]
+        # Get indexes of pixels inside the polygon and set them to 1
+        rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
+        # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
+        try:
+            mask[rr, cc, 0] = 1
+        except:
+            # Clip row indices to valid range
+            rr = np.clip(rr, 0, info["height"] - 1)
+            # Clip column indices to valid range
+            cc = np.clip(cc, 0, info["width"] - 1)
+            mask[rr, cc, 0] = 1
+            # print("Error Occured")
             # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-            try:
-                mask[rr, cc, i] = 1
-            except:
-                rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
-                cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
-                mask[rr, cc, i] = 1
-                # print("Error Occured")
-                # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
         # Return mask, and array of class IDs of each instance. Since we have
         # one class ID only, we return an array of 1s
         return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
-
 
     def image_reference(self, image_id):
         """Return the path of the image."""
         info = self.image_info[image_id]
         return info["path"]
 
-class InferenceConfig(Config):
+
+class GTConfig(Config):
     NAME = "cell"
+    TEST_MODE = "inference"
+    IMAGE_RESIZE_MODE = "none"
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
     NUM_CLASSES = 1 + 3
     USE_MINI_MASK = False
     VALIDATION_STEPS = 50
+    IMAGE_MAX_DIM = 4096
+    IMAGE_MIN_DIM = 1024
 
-def calculate_iou(pred_boxes, gt_boxes):
-    # Calculate the coordinates of the intersection area
-    x1 = np.maximum(pred_boxes[:, 0], gt_boxes[:, 0])
-    y1 = np.maximum(pred_boxes[:, 1], gt_boxes[:, 1])
-    x2 = np.minimum(pred_boxes[:, 2], gt_boxes[:, 2])
-    y2 = np.minimum(pred_boxes[:, 3], gt_boxes[:, 3])
 
-    # Calculate the intersection area
-    intersection_area = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+class InferenceConfig(Config):
+    NAME = "cell"
+    TEST_MODE = "inference"
+    # IMAGE_RESIZE_MODE = "pad64"
+    GPU_COUNT = 1
+    IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
+    NUM_CLASSES = 1 + 3
+    USE_MINI_MASK = False
+    VALIDATION_STEPS = 50
+    IMAGE_MAX_DIM = 4096
+    IMAGE_MIN_DIM = 1024
 
-    # Calculate the area of the predicted and ground truth boxes
-    pred_box_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (pred_boxes[:, 3] - pred_boxes[:, 1])
-    gt_box_area = (gt_boxes[:, 2] - gt_boxes[:, 0]) * (gt_boxes[:, 3] - gt_boxes[:, 1])
 
-    # Calculate the union area
-    union_area = pred_box_area + gt_box_area - intersection_area
-
-    # Calculate IoU for each pair of boxes
-    iou = intersection_area / union_area
-
-    return iou
-
-def plot_map_recall_curve(mAP_values, recall_values, save_path=None):
-    """
-    Plot Mean Average Precision (mAP) and Recall curve.
-
-    Args:
-    mAP_values (list): List of mAP values at different points.
-    recall_values (list): List of Recall values at corresponding points.
-    save_path (str, optional): Path to save the plot as an image file. If not provided, the plot will be displayed.
-
-    Returns:
-    None
-    """
-    # Create a figure
-    plt.figure(figsize=(8, 6))
-
-    # Plot the mAP/Recall curve
-    plt.plot(recall_values, mAP_values, marker='o', linestyle='-')
-    plt.xlabel('Recall')
-    plt.ylabel('Mean Average Precision (mAP)')
-    plt.title('mAP vs. Recall Curve')
-
-    # Annotate points with mAP values
-    for i, mAP in enumerate(mAP_values):
-        plt.annotate(f'{mAP:.2f}', (recall_values[i], mAP_values[i]), textcoords="offset points", xytext=(0,10), ha='center')
-
-    # Show or save the plot
-    if save_path:
-        plt.savefig(save_path)
-    else:
-        plt.show()
 class EvalImage():
-    def __init__(self, dataset, model, cfg):
+    def __init__(self, dataset, model, cfg, cfg_GT, output_folder):
         self.dataset = dataset
         self.model = model
         self.cfg = cfg
+        self.cfg_GT = cfg_GT
+        self.output_folder = output_folder
+
+    def convert_pixels_to_inches(self, pixels):
+        dpi = 300
+        inches = pixels / dpi
+        return inches
 
     def evaluate_model(self, limit):
-        APs = []
-        recalls = []
-        if limit==-1:
-            limit = len(dataset_val.image_ids)
+        precisions = []
+        # Existing code
+        if limit == -1:
+            limit = len(self.dataset.image_ids)
         for image_id in range(limit):
             # Load image and ground truth data
             image, image_meta, gt_class_id, gt_bbox, gt_mask =\
-                modellib.load_image_gt(dataset_val, self.cfg,
-                                       dataset_val.image_ids[image_id])
-            molded_images = np.expand_dims(modellib.mold_image(image, self.cfg), 0)
-            # make prediction
-            results = self.model.detect([image], verbose=0)
-            r = results[0]
-            # 計算 IoU/Precision 圖
-            iou_thresholds = [0, 0.01, 0.5, 1.0]
+                modellib.load_image_gt(self.dataset, self.cfg_GT,
+                                       self.dataset.image_ids[image_id])
+            if gt_mask.size == 0:
+                # precisions.append(1)
+                continue
+            if np.max(gt_mask) == 0:
+                # precisions.append(1)
+                continue
+            molded_images = np.expand_dims(
+                modellib.mold_image(image, self.cfg_GT), 0)
+            # results = self.model.detect([image], verbose=0)
+            # r = results[0]
+            # print(r['masks'].shape)
             # Compute AP
-            for iou_threshold in iou_thresholds:
-                AP, _,recall,_ =\
-                    compute_ap(gt_bbox, gt_class_id, gt_mask,\
-                                r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=iou_threshold)
-            print("AP:", AP)
-                # print("IoU:", calculate_iou(overlaps[0],overlaps[1]))
-                # print("Precision:", precisions)
+            '''
+            AP, P,recall,overlaps =\
+                compute_ap(gt_bbox, gt_class_id, gt_mask,\
+                            r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0.5)
+            precisions.append(AP)
+            print("Precision: ",np.max(P))
+            print("overlaps: ", np.max(overlaps))
+            '''
+            # Get the original image size in pixels
+            image_height, image_width = image.shape[:2]
 
-            # print("Recall:", r)
-            recalls.append(np.mean(recall))
-            # print("Overlap:", overlaps)
-            APs.append(AP)      
+            # Convert the image size from pixels to inches
+            image_height_inches = self.convert_pixels_to_inches(image_height)
+            image_width_inches = self.convert_pixels_to_inches(image_width)
 
-        plot_iou_precision_recall(iou_thresholds, APs, recalls)
+            # Set the figure size to the original image size in inches
+            fig = plt.figure(figsize=[image_width_inches, image_height_inches])
+            ax = fig.add_subplot(111)
+            # Set the DPI of the plot to 300
+            plt.rcParams["figure.dpi"] = 300
 
-        mAP = np.mean(APs)
-        return mAP
+            # Plot the image
+            ax.imshow(image)
+
+            # Plot the GT mask
+            for i in range(gt_mask.shape[-1]):
+                mask = gt_mask[..., i]
+                for contour in measure.find_contours(mask, 0.5):
+                    ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=2)
+            '''
+            # Plot the predicted mask
+            for i in range(r['masks'].shape[-1]):
+                mask = r['masks'][..., i]
+                for contour in measure.find_contours(mask, 0.5):
+                    ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=2)
+            '''
+            # Save the plot to a file
+            filename = os.path.join(
+                self.output_folder, f'image_{image_id}.png')
+            plt.savefig(filename)
+            plt.close()
+
 
 if __name__ == "__main__":
     # ... (Your existing argparse code)
+
     parser = argparse.ArgumentParser(description="Evaluation Script")
-    parser.add_argument("--dataset", required=True, help="Path to the dataset directory")
-    parser.add_argument("--workdir", required=True, help="Path to the working directory")
-    parser.add_argument("--weight_path", required=True, help="Path to the weight file")
-    parser.add_argument("--limit", type=int, default=-1, help="Number of images to evaluate (default: all)")
-    parser.add_argument("--cpu", action="store_true", help="Run on CPU instead of GPU")    
+    parser.add_argument("--dataset", required=True,
+                        help="Path to the dataset directory")
+    parser.add_argument("--workdir", required=True,
+                        help="Path to the working directory")
+    parser.add_argument("--weight_path", required=True,
+                        help="Path to the weight file")
+    parser.add_argument("--limit", type=int, default=-1,
+                        help="Number of images to evaluate (default: all)")
+    parser.add_argument("--cpu", action="store_true",
+                        help="Run on CPU instead of GPU")
+    parser.add_argument("--output_folder",
+                        help="Output folder for the evaluation results")
     args = parser.parse_args()
     if args.cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Set to empty string to use CPU only
+        # Set to empty string to use CPU only
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     DATASET_PATH = args.dataset
     WORK_DIR = args.workdir
     LIMIT = args.limit
     weight_path = args.weight_path
+    output_folder = args.output_folder
+    dataset_test = CustomDataset()
+    dataset_test.load_custom(DATASET_PATH, "test")
+    dataset_test.prepare()
+    print("Number of Images: ", dataset_test.num_images)
+    print("Number of Classes: ", dataset_test.num_classes)
 
-    dataset_val = CustomDataset()
-    dataset_val.load_custom(DATASET_PATH, "val")
-    dataset_val.prepare()
-    print("Number of Images: ", dataset_val.num_images)
-    print("Number of Classes: ", dataset_val.num_classes)
-    image_ids = dataset_val.image_ids[:LIMIT]  # Limit the number of images to evaluate
-    class InferenceConfig(Config):
-        NAME = "cell"
-        GPU_COUNT = 1
-        IMAGES_PER_GPU = 1
-        NUM_CLASSES = 1 + 3
-        USE_MINI_MASK = False
-        VALIDATION_STEPS = 50
-    model = modellib.MaskRCNN(mode="inference", config=InferenceConfig(), model_dir=WORK_DIR + "/logs")
-    model.load_weights(weight_path, by_name=True, exclude=[
-        "mrcnn_class_logits", "mrcnn_bbox_fc",
-        "mrcnn_bbox", "mrcnn_mask"])
-    eval = EvalImage(dataset_val, model, InferenceConfig())
-
-    mAP = eval.evaluate_model(limit=LIMIT)
-    print("Mean Average Precision (mAP):", mAP)
-
-    # plot_map_recall_curve(results[1], results[2], save_path="mAP_Recall_Curve.png")
-    # print("recall curve finished")
-
+    model = modellib.MaskRCNN(
+        mode="inference", config=InferenceConfig(), model_dir=WORK_DIR + "/logs")
+    model.load_weights(weight_path, by_name=True)
+    eval = EvalImage(dataset_test, model, InferenceConfig(),
+                     GTConfig(),  output_folder)
+    results = eval.evaluate_model(limit=LIMIT)
