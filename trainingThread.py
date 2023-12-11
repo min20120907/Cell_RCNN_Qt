@@ -51,6 +51,65 @@ sys.setrecursionlimit(5000)  # Set a higher recursion limit
 import signal
 
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
+from mrcnn.utils import compute_ap
+
+class MeanAveragePrecisionCallback(keras.callbacks.Callback):
+   def __init__(self, model, model_inference, dataset_test, calculate_map_at_every_X_epoch, verbose, dataset_limit):
+       self.model = model
+       self.model_inference = model_inference
+       self.dataset_test = dataset_test
+       self.calculate_map_at_every_X_epoch = calculate_map_at_every_X_epoch
+       self.verbose = verbose
+       self.dataset_limit = dataset_limit
+
+   def on_epoch_end(self, epoch, logs=None):
+       if epoch % self.calculate_map_at_every_X_epoch == 0:
+           mAP = self.calculate_mAP()
+           print(f'mAP at the end of epoch {epoch}: {mAP}')
+
+   def calculate_mAP(self):
+       APs = []
+       mAP = 0
+       num_classes = 4
+
+       for i in tqdm(range(num_classes), desc="Calculating mAP"):
+           true_boxes, true_masks = self.get_true_boxes_and_masks(i)
+           pred_boxes, pred_masks = self.get_pred_boxes_and_masks(i)
+           AP = compute_ap(true_boxes, true_masks, pred_boxes, pred_masks)
+           APs.append(AP)
+           self.tqdm.set_postfix({'AP': AP, 'Recall': true_boxes.shape[0] / self.dataset_test.total_objects})
+
+       mAP = np.mean(APs)
+
+       return mAP
+
+   def get_true_boxes_and_masks(self, class_id):
+       true_boxes = []
+       true_masks = []
+
+       for image_id in self.dataset_test._image_ids[:self.dataset_limit] if self.dataset_limit else range(len(self.dataset_test.image_ids)):
+           boxes, masks = self.dataset_test.load_image_gt(image_id, class_id)
+           true_boxes.append(boxes)
+           true_masks.append(masks)
+
+       return np.concatenate(true_boxes), np.concatenate(true_masks)
+
+   def get_pred_boxes_and_masks(self, class_id):
+       pred_boxes = []
+       pred_masks = []
+
+       for image_id in self.dataset_test._image_ids[:self.dataset_limit] if self.dataset_limit else range(len(self.dataset_test.image_ids)):
+           image, true_boxes, true_masks = self.dataset_test[image_id]
+           results = self.model_inference.detect([image], verbose=0)
+           pred_boxes_image = results[0]['rois']
+           pred_masks_image = results[0]['masks']
+           pred_boxes_image = pred_boxes_image[results[0]['class_ids'] == class_id]
+           pred_masks_image = pred_masks_image[:, :, results[0]['class_ids'] == class_id]
+           pred_boxes.append(pred_boxes_image)
+           pred_masks.append(pred_masks_image)
+
+       return np.concatenate(pred_boxes), np.concatenate(pred_masks)
+
 
 # Limit GPU memory growth
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -141,13 +200,13 @@ class trainingThread(QtCore.QThread):
             """Configuration for training on the toy  dataset.
             Derives from the base Config class and overrides some values.
             """
-            MAX_GT_INSTANCES = 1
+            MAX_GT_INSTANCES = 100
             IMAGE_RESIZE_MODE = "square"
             # Give the configuration a recognizable name
             NAME = "cell"
             # We use a GPU with 12GB memory, which can fit two images.
             # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 10
+            IMAGES_PER_GPU = 4
             # IMAGE_CHANNEL_COUNT = 1
 #            GPU_COUNT = 2
             USE_MINI_MASK = False
@@ -156,7 +215,7 @@ class trainingThread(QtCore.QThread):
             # NUM_CLASSES = 1 + 1 # Background + cell
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
-            IMAGE_MAX_DIM = 64
+            IMAGE_MAX_DIM = 1024
             IMAGE_MIN_DIM = 64
             # Backbone network architecture
             BACKBONE = "resnet101"
@@ -182,9 +241,13 @@ class trainingThread(QtCore.QThread):
             # Validation dataset
             dataset_val = CustomDataset()
             dataset_val.load_custom(self.dataset_path, "val")
-
+            print("Loading testing dataset")
             dataset_val.prepare()
-            
+            # Validation dataset
+            dataset_test = CustomDataset()
+            dataset_test.load_custom(self.dataset_path, "test")
+
+            dataset_test.prepare()
             # *** This training schedule is an example. Update to your needs ***
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
@@ -206,10 +269,9 @@ class trainingThread(QtCore.QThread):
                         ]))
             # tf.compat.v1.enable_eager_execution()
             # add callback to calculate the result of accuracy
-            
-            # mean_average_precision_callback = MeanAveragePrecisionCallback(model,
-            #   model_inference, dataset_val, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
-            
+
+            mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
+
             self.update_training_status.emit("Training network heads")
             
             model.train(dataset_train, dataset_val,

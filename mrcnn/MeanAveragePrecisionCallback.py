@@ -1,5 +1,6 @@
+import traceback
 from tensorflow.keras.callbacks import Callback
-from mrcnn.model import MaskRCNN, Dataset, mold_image, load_image_gt_remote
+from mrcnn.model import MaskRCNN, Dataset, mold_image, load_image_gt_remote, load_image_gt_ray, load_image_gt
 from mrcnn.utils import compute_matches, compute_ap
 import numba as nb
 import numpy as np
@@ -80,31 +81,57 @@ class MeanAveragePrecisionCallback(Callback):
         self.inference_model.load_weights(last_weights_path, by_name=True)
 
     def _calculate_mean_average_precision(self):
+        tf.compat.v1.global_variables_initializer()
         mAPs = []
-        # Use a random subset of the data when a limit is defined
+
         np.random.shuffle(self.dataset_image_ids)
         futures = []
         for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit]):
             future = load_image_gt_remote.remote(self.dataset, self.inference_model.config, image_id)
             futures.append(future)
         results = ray.get(futures)
-
-        # Initialize session for running the computation graph
-
         for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
-            # future = process_image.remote(image, self.inference_model)
-            # r = ray.get(future)
             molded_images = np.expand_dims(mold_image(image, self.inference_model.config), 0)
 
-            results = self.inference_model.detect(molded_images, verbose=1)
-            r = results[0]
-            # Compute mAP - VOC uses IoU 0.5
-            AP, _, _, _ = compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
+            detection_results = self.inference_model.detect(molded_images, verbose=1)
+            r = detection_results[0]
+            print("Score: ", r["scores"])
+            mAP, precisions, recalls, overlaps = compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
                                         r["class_ids"], r["scores"], r['masks'])
-            mAPs.append(AP)
-    
+            mAPs.append(mAP)
 
         return np.array(mAPs)
+
+    # def on_train_batch_end(self, batch, logs=None):
+    #     if batch > 0 and batch % self.calculate_map_at_every_X_epoch == 0:
+    #         self._load_weights_for_model()
+# 
+    #         # Get the input data of the current batch
+# 
+    #         try:
+    #             # Process the input data to obtain the current batch image
+    #             current_batch_image,_,gt_bbox, gt_class_id, gt_mask = load_image_gt(self.dataset, self.inference_model.config, self.dataset_image_ids[batch*self.inference_model.config.BATCH_SIZE])
+# 
+    #             # Perform further operations on the current batch image as needed
+    #             molded_images = np.expand_dims(mold_image(current_batch_image, self.inference_model.config), 0)
+    #             results = self.inference_model.detect(molded_images, verbose=1)
+    #             r = results[0]
+# 
+    #             # Compute the accuracy for the current batch image
+    #             AP, _, _, _ = compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"],
+    #                                      r["class_ids"], r["scores"], r['masks'])
+# 
+    #             # Assign the accuracy value to logs if required
+    #             if logs is not None:
+    #                 logs["val_accuracy"] = AP
+# 
+    #             self._verbose_print("Accuracy at batch {0} is: {1}".format(batch + 1, AP))
+    #         except Exception as e:
+    #             print(e)
+    #             traceback.print_exc()
+# 
+    #     super().on_train_batch_end(batch, logs)
+
     def _calculate_mean_average_precision_old(self):
         
         mAPs = []
@@ -121,11 +148,12 @@ class MeanAveragePrecisionCallback(Callback):
             print("Successfully Init Eager Mode")      
             for image, image_meta, gt_class_id, gt_bbox, gt_mask in results:
                 future = process_image.remote(image, self.inference_model)
-                r = ray.get(future)
-                # Compute mAP - VOC uses IoU 0.5
-                AP, _, _, _ = compute_ap_jit(gt_bbox, gt_class_id, gt_mask, r["rois"],
-                                               r["class_ids"], r["scores"], r['masks'])
-                mAPs.append(AP)        
+            results = ray.get(future)
+            r = results[0]
+            # Compute mAP - VOC uses IoU 0.5
+            AP, _, _, _ = compute_ap_jit(gt_bbox, gt_class_id, gt_mask, r["rois"],
+                                           r["class_ids"], r["scores"], r['masks'])
+            mAPs.append(AP)        
         return np.array(mAPs)
 
 
