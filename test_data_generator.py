@@ -15,8 +15,8 @@ class CustomConfig(Config):
     """Configuration for testing on the toy  dataset.
     Derives from the base Config class and overrides some values.
     """
-    MAX_GT_INSTANCES = 1
-    IMAGE_RESIZE_MODE = "none"
+    MAX_GT_INSTANCES = 100
+    IMAGE_RESIZE_MODE = "square"
     # Give the configuration a recognizable name
     NAME = "cell"
     # We use a GPU with 12GB memory, which can fit two images.
@@ -29,7 +29,7 @@ class CustomConfig(Config):
     NUM_CLASSES = 1 + 3 # Background + cell + chromosome
     # NUM_CLASSES = 1 + 1 # Background + cell
     # Number of testing steps per epoch
-    IMAGE_MAX_DIM = 512
+    IMAGE_MAX_DIM = 256
     IMAGE_MIN_DIM = 64
     # Backbone network architecture
     BACKBONE = "resnet101"
@@ -52,35 +52,40 @@ aug = iaa.Sometimes(5/6, iaa.OneOf([
     iaa.LinearContrast((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
 ]))
 
-test_generator = modellib.data_generator(
-            dataset_test, CustomConfig(), shuffle=True, batch_size=CustomConfig().BATCH_SIZE)
-# Get a batch of data from the generator
-inputs, outputs = next(test_generator)
+while True:
+    try:
+        test_generator = modellib.data_generator(
+                    dataset_test, CustomConfig(), shuffle=True, batch_size=CustomConfig().BATCH_SIZE)
+        # Get a batch of data from the generator
+        inputs, outputs = next(test_generator)
 
-# Get the images and masks from the batch
-images = inputs[0]
-masks = inputs[6]
+        # Get the images and masks from the batch
+        images = inputs[0]
+        masks = inputs[6]
 
-# Convert images to RGB format
-images_rgb = []
-for image in images:
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    images_rgb.append(image_rgb)
+        # Convert images to RGB format
+        images_rgb = []
+        for image in images:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            images_rgb.append(image_rgb)
 
-# Plot the images and masks
-for i in range(len(images_rgb)):
-    image_rgb = images_rgb[i]
-    mask = masks[i]
+        # Plot the images and masks
+        for i in range(len(images_rgb)):
+            image_rgb = images_rgb[i]
+            mask = masks[i]
 
-    # Plot the image
-    plt.figure(figsize=(10, 10))
-    plt.subplot(1, 2, 1)
-    plt.imshow(image_rgb)
-    plt.title('Image')
+            # Plot the image
+            plt.figure(figsize=(10, 10))
+            plt.subplot(1, 2, 1)
+            plt.imshow(image_rgb)
+            plt.title('Image')
 
-    # Plot the mask
-    plt.subplot(1, 2, 2)
-    plt.imshow(mask[:, :, 0], cmap='gray')  # Change index as needed to view other masks
-    plt.title('Mask')
+            # Plot the mask
+            plt.subplot(1, 2, 2)
+            plt.imshow(mask[:, :, 0], cmap='gray')  # Change index as needed to view other masks
+            plt.title('Mask')
 
-    plt.show()
+            plt.show()
+
+    except StopIteration:
+        break

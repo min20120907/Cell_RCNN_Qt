@@ -1,3 +1,4 @@
+from multiprocessing import Pool
 import numpy as np
 import os
 import argparse
@@ -92,8 +93,32 @@ class EvalImage():
         dpi = 300
         inches = pixels / dpi
         return inches
+    def evaluate_image(self, image_id):
+        # Load image and ground truth data
+        image, image_meta, gt_class_id, gt_bbox, gt_mask =\
+            modellib.load_image_gt(self.dataset, self.cfg_GT,
+                                   self.dataset.image_ids[image_id])
+        if gt_mask.size == 0:
+            return 1
+        if np.max(gt_mask) == 0:
+            return 1
+        molded_images = np.expand_dims(
+            modellib.mold_image(image, self.cfg_GT), 0)
+        results = self.model.detect([image], verbose=0)
+        r = results[0]
+        # Compute AP
+        AP, P,recall,overlaps =\
+            compute_ap(gt_bbox, gt_class_id, gt_mask,\
+                        r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0.5)
+        return AP
 
     def evaluate_model(self, limit):
+        if limit == -1:
+            limit = len(self.dataset.image_ids)
+        with Pool(4) as p:
+            precisions = p.map(self.evaluate_image, range(limit))
+        return np.mean(precisions)
+    def evaluate_model_old(self, limit):
         precisions = []
         # Existing code
         if limit == -1:
