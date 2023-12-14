@@ -529,8 +529,9 @@ def minimize_mask(bbox, mask, mini_shape):
         if m.size == 0:
             raise Exception("Invalid bounding box with area of zero")
         # Resize with bilinear interpolation
-        m = resize(m, mini_shape)
-        mini_mask[:, :, i] = np.around(m).astype(np.bool)
+        # m = resize(m, mini_shape)
+        m = skimage.transform.resize(m.astype(np.float32), mini_shape, order=1, mode="constant", preserve_range=True)
+        mini_mask[:, :, i] = np.around(m).astype(bool)
     return mini_mask
 
 
@@ -548,7 +549,7 @@ def expand_mask(bbox, mini_mask, image_shape):
         w = x2 - x1
         # Resize with bilinear interpolation
         m = resize(m, (h, w))
-        mask[y1:y2, x1:x2, i] = np.around(m).astype(np.bool)
+        mask[y1:y2, x1:x2, i] = np.around(m).astype(bool)
     return mask
 
 
@@ -568,10 +569,10 @@ def unmold_mask(mask, bbox, image_shape):
     threshold = 0.5
     y1, x1, y2, x2 = bbox
     mask = resize(mask, (y2 - y1, x2 - x1))
-    mask = np.where(mask >= threshold, 1, 0).astype(np.bool)
+    mask = np.where(mask >= threshold, 1, 0).astype(bool)
 
     # Put the mask in the right location.
-    full_mask = np.zeros(image_shape[:2], dtype=np.bool)
+    full_mask = np.zeros(image_shape[:2], dtype=bool)
     full_mask[y1:y2, x1:x2] = mask
     return full_mask
 
@@ -644,13 +645,21 @@ def generate_pyramid_anchors(scales, ratios, feature_shapes, feature_strides,
 ############################################################
 
 def trim_zeros(x):
-    """It's common to have tensors larger than the available data and
-    pad with zeros. This function removes rows that are all zeros.
-
-    x: [rows, columns].
     """
-    assert len(x.shape) == 2
-    return x[~np.all(x == 0, axis=1)]
+    Trim zeros from the beginning and end of a 1-D array or sequence.
+    """
+    assert len(x.shape) <= 2
+
+    # Reshape the array to have two dimensions if it has only one dimension
+    if len(x.shape) == 1:
+        x = np.expand_dims(x, axis=1)
+
+    # Trim zeros from the beginning and end of the array along the second dimension
+    mask = np.any(x != 0, axis=1)
+    x = x[mask]
+
+    return x.squeeze()
+
 
 
 def compute_matches(gt_boxes, gt_class_ids, gt_masks,
@@ -893,6 +902,8 @@ def resize(image, output_shape, order=1, mode='constant', cval=0, clip=True,
     of skimage. This solves the problem by using different parameters per
     version. And it provides a central place to control resizing defaults.
     """
+    if image.dtype == bool:
+        image = image.astype(float)
     if LooseVersion(skimage.__version__) >= LooseVersion("0.14"):
         # New in 0.14: anti_aliasing. Default it to False for backward
         # compatibility with skimage 0.13.

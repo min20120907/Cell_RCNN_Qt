@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import ray
 import cv2
+from CustomCroppingDataset import CustomCroppingDataset
 from CustomDataset import CustomDataset
 from mrcnn.config import Config
 from mrcnn.utils import compute_ap, Dataset, compute_iou
@@ -112,15 +113,14 @@ class EvalImage():
                 modellib.mold_image(image, self.cfg_GT), 0)
             results = self.model.detect([image], verbose=0)
             r = results[0]
-            # print(r['masks'].shape)
+            print(r['masks'].shape)
             # Compute AP
 
             AP, P,recall,overlaps =\
                 compute_ap(gt_bbox, gt_class_id, gt_mask,\
                             r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0.5)
             precisions.append(AP)
-            print("Precision: ",np.max(P))
-            print("overlaps: ", np.max(overlaps))
+            print("Precision: ",np.max(P)) 
 
             # Get the original image size in pixels
             image_height, image_width = image.shape[:2]
@@ -143,18 +143,21 @@ class EvalImage():
                 mask = gt_mask[..., i]
                 for contour in measure.find_contours(mask, 0.5):
                     ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=2)
-
+# 
             # Plot the predicted mask
+            
             for i in range(r['masks'].shape[-1]):
                 mask = r['masks'][..., i]
                 for contour in measure.find_contours(mask, 0.5):
                     ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=2)
-
-            # Save the plot to a file
+# 
+        #     # Save the plot to a file
             filename = os.path.join(
                 self.output_folder, f'image_{image_id}.png')
             plt.savefig(filename)
             plt.close()
+        return np.mean(precisions)
+        # print(np.mean(precisions))
 
 
 if __name__ == "__main__":
@@ -194,3 +197,4 @@ if __name__ == "__main__":
     eval = EvalImage(dataset_test, model, InferenceConfig(),
                      GTConfig(),  output_folder)
     results = eval.evaluate_model(limit=LIMIT)
+    print("Mean Precision: ", np.mean(results))

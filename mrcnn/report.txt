@@ -1,0 +1,31 @@
+TensorFlow 2.0 Upgrade Script
+-----------------------------
+Converted 1 files
+Detected 0 issues that require attention
+--------------------------------------------------------------------------------
+================================================================================
+Detailed log follows:
+
+================================================================================
+--------------------------------------------------------------------------------
+Processing file 'model.py'
+ outputting to 'model.py'
+--------------------------------------------------------------------------------
+
+440:17: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+561:35: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+567:15: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+568:19: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+586:23: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+588:23: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+762:11: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+765:20: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+780:14: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+802:35: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+1089:14: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+1114:14: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+1180:22: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+1218:18: INFO: Renamed 'tf.where' to 'tf.compat.v1.where'
+3451:12: INFO: Added keywords to args of function 'tf.shape'
+--------------------------------------------------------------------------------
+

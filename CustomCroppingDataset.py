@@ -38,7 +38,6 @@ def convert_to_polygon_dict(list_polygon):
   # Convert list to dictionary
   return {'all_points_x': [point[0] for point in list_polygon], 'all_points_y': [point[1] for point in list_polygon]}
 
-
 def convert_to_polygons(data):
    polygons = [[[x, y] for x, y in zip(d['all_points_x'], d['all_points_y'])] for d in data]
    return polygons
@@ -215,44 +214,46 @@ def load_annotations(annotation, subset_dir, class_id):
 
 class CustomCroppingDataset(utils.Dataset):
   def load_custom(self, dataset_dir, subset):
-        """Load a subset of the bottle dataset.
-        dataset_dir: Root directory of the dataset.
-        subset: Subset to load: train or val
-        """
-        # Add classes. We have only one class to add.
-        self.add_class("cell", 1, "cell")
-        self.add_class("cell", 2, "chromosome")
-        self.add_class("cell", 3, "nuclear")
-        # Train or validation dataset?
-        assert subset in ["train", "val", "test"]
-        subset_dir = os.path.join(dataset_dir, subset)
 
-        def to_iterator(obj_ids):
-            while obj_ids:
-                done, obj_ids = ray.wait(obj_ids)
-                yield ray.get(done[0])
-        
-        # Load annotations from all JSON files using Ray multiprocessing
-        annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
-        futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
-                    [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
-                    [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
-        # Showing the progressbar
-        for _ in tqdm(to_iterator(futures), total=len(futures)):
-            pass
-        results = ray.get(futures)
-        
+    """Load a subset of the bottle dataset.
+    dataset_dir: Root directory of the dataset.
+    subset: Subset to load: train or val
+    """
+    # Add classes. We have only one class to add.
+    self.add_class("cell", 1, "cell")
+    self.add_class("cell", 2, "chromosome")
+    self.add_class("cell", 3, "nuclear")
+    # Train or validation dataset?
+    assert subset in ["train", "val", "test"]
+    subset_dir = os.path.join(dataset_dir, subset)
 
-        # Add images
-        for images in results:
-            for image in images:
-                self.add_image(
-                    'cell',
-                    image_id=image['image_id'],  # use file name as a unique image id
-                    path=image['path'],
-                    width=image['width'], height=image['height'],
-                    polygons=image['polygons'],
-                    num_ids=image['num_ids'])
+    def to_iterator(obj_ids):
+        while obj_ids:
+            done, obj_ids = ray.wait(obj_ids)
+            yield ray.get(done[0])
+
+    # Load annotations from all JSON files using Ray multiprocessing
+    annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
+    futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
+                [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a] + \
+                [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+    # Showing the progressbar
+    for _ in tqdm(to_iterator(futures), total=len(futures)):
+        pass
+    results = ray.get(futures)
+
+
+    # Add images
+    for images in results:
+        for image in images:
+            self.add_image(
+                'cell',
+                image_id=image['image_id'],  # use file name as a unique image id
+                path=image['path'],
+                width=image['width'], height=image['height'],
+                polygons=image['polygons'],
+                num_ids=image['num_ids'])
+
 
   def load_mask(self, image_id):
         """Generate instance masks for an image.
