@@ -38,7 +38,6 @@ def convert_to_polygon_dict(list_polygon):
   # Convert list to dictionary
   return {'all_points_x': [point[0] for point in list_polygon], 'all_points_y': [point[1] for point in list_polygon]}
 
-
 def convert_to_polygons(data):
    polygons = [[[x, y] for x, y in zip(d['all_points_x'], d['all_points_y'])] for d in data]
    return polygons
@@ -215,6 +214,7 @@ def load_annotations(annotation, subset_dir, class_id):
 
 class CustomCroppingDataset(utils.Dataset):
   def load_custom(self, dataset_dir, subset):
+
     """Load a subset of the bottle dataset.
     dataset_dir: Root directory of the dataset.
     subset: Subset to load: train or val
@@ -253,6 +253,7 @@ class CustomCroppingDataset(utils.Dataset):
                 width=image['width'], height=image['height'],
                 polygons=image['polygons'],
                 num_ids=image['num_ids'])
+
 
   def load_mask(self, image_id):
         """Generate instance masks for an image.

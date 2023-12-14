@@ -51,6 +51,7 @@ sys.setrecursionlimit(5000)  # Set a higher recursion limit
 import signal
 
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
 from mrcnn.utils import compute_ap
 
 class MeanAveragePrecisionCallback(keras.callbacks.Callback):
@@ -215,7 +216,8 @@ class trainingThread(QtCore.QThread):
             # NUM_CLASSES = 1 + 1 # Background + cell
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
-            IMAGE_MAX_DIM = 1024
+
+            IMAGE_MAX_DIM = 256
             IMAGE_MIN_DIM = 64
             # Backbone network architecture
             BACKBONE = "resnet101"
@@ -278,7 +280,7 @@ class trainingThread(QtCore.QThread):
                     learning_rate=config.LEARNING_RATE,
                     epochs=int(self.steps),
                     layers='heads',
-                    # custom_callbacks=[mean_average_precision_callback],
+                    custom_callbacks=[mean_average_precision_callback],
                     augmentation = aug,
                     )
            
