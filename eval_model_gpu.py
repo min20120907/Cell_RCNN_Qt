@@ -1,4 +1,3 @@
-from multiprocessing import Pool
 import numpy as np
 import os
 import argparse
@@ -80,6 +79,7 @@ class InferenceConfig(Config):
     IMAGE_MAX_DIM = 4096
     IMAGE_MIN_DIM = 1024
 
+from tqdm import tqdm
 
 class EvalImage():
     def __init__(self, dataset, model, cfg, cfg_GT, output_folder):
@@ -93,37 +93,15 @@ class EvalImage():
         dpi = 300
         inches = pixels / dpi
         return inches
-    def evaluate_image(self, image_id):
-        # Load image and ground truth data
-        image, image_meta, gt_class_id, gt_bbox, gt_mask =\
-            modellib.load_image_gt(self.dataset, self.cfg_GT,
-                                   self.dataset.image_ids[image_id])
-        if gt_mask.size == 0:
-            return 1
-        if np.max(gt_mask) == 0:
-            return 1
-        molded_images = np.expand_dims(
-            modellib.mold_image(image, self.cfg_GT), 0)
-        results = self.model.detect([image], verbose=0)
-        r = results[0]
-        # Compute AP
-        AP, P,recall,overlaps =\
-            compute_ap(gt_bbox, gt_class_id, gt_mask,\
-                        r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0.5)
-        return AP
 
     def evaluate_model(self, limit):
-        if limit == -1:
-            limit = len(self.dataset.image_ids)
-        with Pool(4) as p:
-            precisions = p.map(self.evaluate_image, range(limit))
-        return np.mean(precisions)
-    def evaluate_model_old(self, limit):
         precisions = []
+        class_precisions = {1: [], 2: [], 3: []}  # This will now be a dictionary of lists
         # Existing code
         if limit == -1:
             limit = len(self.dataset.image_ids)
-        for image_id in range(limit):
+        pbar = tqdm(range(limit))
+        for image_id in pbar:
             # Load image and ground truth data
             image, image_meta, gt_class_id, gt_bbox, gt_mask =\
                 modellib.load_image_gt(self.dataset, self.cfg_GT,
@@ -138,50 +116,20 @@ class EvalImage():
                 modellib.mold_image(image, self.cfg_GT), 0)
             results = self.model.detect([image], verbose=0)
             r = results[0]
-            print(r['masks'].shape)
+            # print(r['masks'].shape)
             # Compute AP
 
             AP, P,recall,overlaps =\
                 compute_ap(gt_bbox, gt_class_id, gt_mask,\
                             r["rois"], r["class_ids"], r["scores"], r['masks'],iou_threshold=0.5)
             precisions.append(AP)
-            print("Precision: ",np.max(P)) 
-
-            # Get the original image size in pixels
-            image_height, image_width = image.shape[:2]
-
-            # Convert the image size from pixels to inches
-            image_height_inches = self.convert_pixels_to_inches(image_height)
-            image_width_inches = self.convert_pixels_to_inches(image_width)
-
-            # Set the figure size to the original image size in inches
-            fig = plt.figure(figsize=[image_width_inches, image_height_inches])
-            ax = fig.add_subplot(111)
-            # Set the DPI of the plot to 300
-            plt.rcParams["figure.dpi"] = 300
-
-            # Plot the image
-            ax.imshow(image)
-
-            # Plot the GT mask
-            for i in range(gt_mask.shape[-1]):
-                mask = gt_mask[..., i]
-                for contour in measure.find_contours(mask, 0.5):
-                    ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=2)
-# 
-            # Plot the predicted mask
+            count = 0
+            for class_id in r["class_ids"]:
+                class_precisions[class_id].append(P[count])  # Store the precision for each class
+                count+=1
+            pbar.set_postfix({"Precision": np.max(P)})
             
-            for i in range(r['masks'].shape[-1]):
-                mask = r['masks'][..., i]
-                for contour in measure.find_contours(mask, 0.5):
-                    ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=2)
-# 
-        #     # Save the plot to a file
-            filename = os.path.join(
-                self.output_folder, f'image_{image_id}.png')
-            plt.savefig(filename)
-            plt.close()
-        return np.mean(precisions)
+        return np.mean(precisions),class_precisions
         # print(np.mean(precisions))
 
 
@@ -221,5 +169,10 @@ if __name__ == "__main__":
     model.load_weights(weight_path, by_name=True)
     eval = EvalImage(dataset_test, model, InferenceConfig(),
                      GTConfig(),  output_folder)
-    results = eval.evaluate_model(limit=LIMIT)
-    print("Mean Precision: ", np.mean(results))
+    results,class_precisions = eval.evaluate_model(limit=LIMIT)
+    print("Mean Precision: ", results)
+    
+    print("Cell Precisions: ", np.mean(class_precisions[1]))
+    print("Chromosome Precisions: ", np.mean(class_precisions[2]))
+    print("Nuclear Precisions: ", np.mean(class_precisions[3]))
+    print(class_precisions)
