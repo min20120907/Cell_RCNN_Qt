@@ -17,6 +17,8 @@ import json
 import ray
 from CustomCroppingDataset import CustomCroppingDataset
 from CustomDataset import CustomDataset
+from LiveCellCroppingDataset import LiveCellCroppingDataset
+from LiveCellDataset import LiveCellDataset
 from mrcnn import model as modellib, utils
 import tensorflow.keras as keras
 
@@ -103,7 +105,7 @@ class MeanAveragePrecisionCallback(Callback):
         
         np.random.shuffle(self.dataset_image_ids)
         
-        for image_id in tqdm.tqdm(self.dataset_image_ids[:self.dataset_limit], desc='Calculating mAP, AR, IoU'):
+        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit], desc='Calculating mAP, AR, IoU'):
             image, image_meta, gt_class_id, gt_bbox, gt_mask = modellib.load_image_gt(self.dataset, self.inference_model.config, image_id)
             molded_images = np.expand_dims(modellib.mold_image(image, self.inference_model.config), 0)
             results = self.inference_model.detect(molded_images, verbose=0)
@@ -215,7 +217,6 @@ class trainingThread(QtCore.QThread):
         #  Configurations
         ############################################################
 
-        
         class CustomConfig(Config):
             """Configuration for training on the toy  dataset.
             Derives from the base Config class and overrides some values.
@@ -228,7 +229,6 @@ class trainingThread(QtCore.QThread):
             # Adjust down if you use a smaller GPU.
             IMAGES_PER_GPU = 12
             # IMAGE_CHANNEL_COUNT = 1
-#            GPU_COUNT = 2
             USE_MINI_MASK = False
             # Number of classes (including background)
             NUM_CLASSES = 1 + 3 # Background + cell + chromosome
@@ -236,7 +236,33 @@ class trainingThread(QtCore.QThread):
             # Number of training steps per epoch
             STEPS_PER_EPOCH = self.epoches
             IMAGE_MAX_DIM = 256
-            IMAGE_MIN_DIM = 64
+            IMAGE_MIN_DIM = 256
+            # Backbone network architecture
+            BACKBONE = "resnet101"
+
+            # Number of validation steps per epoch
+            VALIDATION_STEPS = 50
+        class LiveCellConfig(Config):
+            """Configuration for training on the toy  dataset.
+            Derives from the base Config class and overrides some values.
+            """
+            MAX_GT_INSTANCES = 100
+            IMAGE_RESIZE_MODE = "square"
+            # Give the configuration a recognizable name
+            NAME = "livecell"
+            # We use a GPU with 12GB memory, which can fit two images.
+            # Adjust down if you use a smaller GPU.
+            IMAGES_PER_GPU = 12
+            # IMAGE_CHANNEL_COUNT = 1
+#            GPU_COUNT = 2
+            USE_MINI_MASK = False
+            # Number of classes (including background)
+            NUM_CLASSES = 1 + 8 # Background + cell + chromosome
+            # NUM_CLASSES = 1 + 1 # Background + cell
+            # Number of training steps per epoch
+            STEPS_PER_EPOCH = self.epoches
+            IMAGE_MAX_DIM = 256
+            IMAGE_MIN_DIM = 256
             # Backbone network architecture
             BACKBONE = "resnet101"
 
@@ -253,21 +279,21 @@ class trainingThread(QtCore.QThread):
             """Train the model."""
             # Training dataset.
             print("Loading training dataset")
-            dataset_train = CustomCroppingDataset()
+            dataset_train = LiveCellCroppingDataset()
             dataset_train.load_custom(self.dataset_path,"train")
 
             dataset_train.prepare()
             print("Loading validation dataset")
             # Validation dataset
-            dataset_val = CustomCroppingDataset()
+            dataset_val = LiveCellCroppingDataset()
             dataset_val.load_custom(self.dataset_path, "val")
-            print("Loading testing dataset")
+            # print("Loading testing dataset")
             dataset_val.prepare()
-            # Validation dataset
-            dataset_test = CustomCroppingDataset()
-            dataset_test.load_custom(self.dataset_path, "test")
-
-            dataset_test.prepare()
+            # testing dataset
+            # dataset_test = CustomDataset()
+            # dataset_test.load_custom(self.dataset_path, "test")
+# 
+            # dataset_test.prepare()
             # *** This training schedule is an example. Update to your needs ***
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
@@ -290,7 +316,7 @@ class trainingThread(QtCore.QThread):
             # tf.compat.v1.enable_eager_execution()
             # add callback to calculate the result of accuracy
 
-            mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
+            # mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
 
             self.update_training_status.emit("Training network heads")
             
@@ -298,7 +324,7 @@ class trainingThread(QtCore.QThread):
                     learning_rate=config.LEARNING_RATE,
                     epochs=int(self.steps),
                     layers='heads',
-                    custom_callbacks=[mean_average_precision_callback],
+                    # custom_callbacks=[mean_average_precision_callback],
                     augmentation = aug,
                     )
            
@@ -313,7 +339,7 @@ class trainingThread(QtCore.QThread):
         self.update_training_status.emit("Logs: "+self.WORK_DIR+"/logs")
         # Configurations
         if self.train_mode == "train":
-            config = CustomConfig()
+            config = LiveCellConfig()
         config.display()
         
  
@@ -326,8 +352,8 @@ class trainingThread(QtCore.QThread):
             # Number of images to process on each GPU
             IMAGES_PER_GPU = 1
             USE_MINI_MASK = False
-        model_inference = modellib.MaskRCNN(mode="inference", config=InferenceConfig(),
-                                 model_dir=self.WORK_DIR+"/logs")
+        # model_inference = modellib.MaskRCNN(mode="inference", config=InferenceConfig(),
+        #                          model_dir=self.WORK_DIR+"/logs")
         weights_path = COCO_WEIGHTS_PATH
         # Download weights filet
         if not os.path.exists(weights_path):
