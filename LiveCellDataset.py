@@ -56,7 +56,7 @@ class LiveCellDataset(utils.Dataset):
 
         # Add classes
         for i, class_name in enumerate(classes, start=1):
-            self.add_class("cell", i, class_name)
+            self.add_class("livecell", i, class_name)
         # Train or validation dataset?
         assert subset in ["train", "val", "test"]
         subset_dir = os.path.join(dataset_dir, subset)
@@ -82,7 +82,7 @@ class LiveCellDataset(utils.Dataset):
         for images in results:
             for image in images:
                 self.add_image(
-                    'cell',
+                    'livecell',
                     image_id=image['image_id'],  # use file name as a unique image id
                     path=image['path'],
                     width=image['width'], height=image['height'],

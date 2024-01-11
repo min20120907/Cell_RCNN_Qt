@@ -65,8 +65,8 @@ def are_polygons_close(polygon1, polygon2):
   y2_max = np.max(polygon2[:, 1])
   x_diff = np.min([np.abs(x1_min - x2_min), np.abs(x1_max - x2_max)])
   y_diff = np.min([np.abs(y1_min - y2_min), np.abs(y1_max - y2_max)])
-  x_diff_threshold = 100
-  y_diff_threshold = 100
+  x_diff_threshold = 1000
+  y_diff_threshold = 1000
   if x_diff < x_diff_threshold and y_diff < y_diff_threshold:
     return True
   else:
@@ -214,6 +214,13 @@ def load_annotations(annotation, subset_dir, class_id):
   return images
 
 class CustomCroppingDataset(utils.Dataset):
+  @property
+  def image_ids(self):
+     return self._image_ids
+  
+  @image_ids.setter
+  def image_ids(self, value):
+     self._image_ids = value
   def load_custom(self, dataset_dir, subset):
         """Load a subset of the bottle dataset.
         dataset_dir: Root directory of the dataset.

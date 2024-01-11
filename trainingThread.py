@@ -53,14 +53,47 @@ sys.setrecursionlimit(5000)  # Set a higher recursion limit
 import signal
 
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
-from mrcnn.utils import Dataset, compute_ap
+def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
+ # Calculate the sizes of each set
+ train_size = int(len(dataset.image_ids) * train_percentage)
+ val_size = int(len(dataset.image_ids) * val_percentage)
+ test_size = len(dataset.image_ids) - train_size - val_size
 
+ # Shuffle the dataset
+ shuffled_image_ids = np.random.permutation(dataset.image_ids)
+
+ # Split the dataset
+ train_set = CustomCroppingDataset()
+ train_set.prepare()
+ train_set.image_ids = shuffled_image_ids[:train_size]
+ train_set.image_info = {id: dataset.image_info[id] for id in train_set.image_ids}
+ train_set.class_info = dataset.class_info
+ train_set.source_class_ids = dataset.source_class_ids
+ train_set.num_classes = dataset.num_classes
+ 
+
+ val_set = CustomCroppingDataset()
+ val_set.prepare()
+ val_set.image_ids = shuffled_image_ids[train_size:train_size + val_size]
+ val_set.image_info = {id: dataset.image_info[id] for id in val_set.image_ids}
+ val_set.class_info = dataset.class_info
+ val_set.source_class_ids = dataset.source_class_ids
+ val_set.num_classes = dataset.num_classes
+
+ test_set = CustomCroppingDataset()
+ test_set.prepare()
+ test_set.image_ids = shuffled_image_ids[train_size + val_size:]
+ test_set.image_info = {id: dataset.image_info[id] for id in test_set.image_ids}
+ test_set.class_info = dataset.class_info
+ test_set.source_class_ids = dataset.source_class_ids
+ test_set.num_classes = dataset.num_classes
+ return train_set, val_set, test_set
 ############################################################
 #  Custom Callbacks
 ############################################################
 from tensorflow.keras.callbacks import Callback
 class MeanAveragePrecisionCallback(Callback):
-    def __init__(self, train_model: modellib.MaskRCNN, inference_model: modellib.MaskRCNN, dataset: Dataset,
+    def __init__(self, train_model: modellib.MaskRCNN, inference_model: modellib.MaskRCNN, dataset: utils.Dataset,
                  calculate_map_at_every_X_epoch=1, dataset_limit=None,
                  verbose=1):
         super().__init__()
@@ -216,7 +249,17 @@ class trainingThread(QtCore.QThread):
         ############################################################
         #  Configurations
         ############################################################
-
+        class EvalInferenceConfig(Config):
+            NAME = "cell"
+            TEST_MODE = "inference"
+            IMAGE_RESIZE_MODE = "pad64"
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
+            NUM_CLASSES = 1 + 3
+            USE_MINI_MASK = False
+            # VALIDATION_STEPS = 50
+            IMAGE_MAX_DIM = 4096
+            IMAGE_MIN_DIM = 1024
         class CustomConfig(Config):
             """Configuration for training on the toy  dataset.
             Derives from the base Config class and overrides some values.
@@ -276,24 +319,40 @@ class trainingThread(QtCore.QThread):
 
         def train(model):
 
+            
             """Train the model."""
-            # Training dataset.
-            print("Loading training dataset")
-            dataset_train = LiveCellCroppingDataset()
-            dataset_train.load_custom(self.dataset_path,"train")
+            split= True
+            if split:
+                dataset = CustomCroppingDataset()
+                dataset.load_custom(self.dataset_path, "train")
+                dataset.load_custom(self.dataset_path, "val")
+                dataset.load_custom(self.dataset_path, "test")
+                dataset.prepare()
+                # Split the dataset into train, validation, and test
+                train_set, val_set, test_set = split_dataset(dataset, 0.7, 0.15, 0.15)
+                # Training dataset
+                dataset_train = train_set
+                # Validation dataset
+                dataset_val = val_set
+                # testing dataset
+                dataset_test = test_set
+            else:
+                # Training dataset.
+                print("Loading training dataset")
+                dataset_train = CustomCroppingDataset()
+                dataset_train.load_custom(self.dataset_path,"train")
 
-            dataset_train.prepare()
-            print("Loading validation dataset")
-            # Validation dataset
-            dataset_val = LiveCellCroppingDataset()
-            dataset_val.load_custom(self.dataset_path, "val")
-            # print("Loading testing dataset")
-            dataset_val.prepare()
-            # testing dataset
-            # dataset_test = CustomDataset()
-            # dataset_test.load_custom(self.dataset_path, "test")
-# 
-            # dataset_test.prepare()
+                dataset_train.prepare()
+                print("Loading validation dataset")
+                # Validation dataset
+                dataset_val = CustomCroppingDataset()
+                dataset_val.load_custom(self.dataset_path, "val")
+                print("Loading testing dataset")
+                dataset_val.prepare()
+                # testing dataset
+                dataset_test = CustomDataset()
+                dataset_test.load_custom(self.dataset_path, "test")
+                dataset_test.prepare()
             # *** This training schedule is an example. Update to your needs ***
             # Since we're using a very small dataset, and starting from
             # COCO trained weights, we don't need to train too long. Also,
@@ -316,15 +375,33 @@ class trainingThread(QtCore.QThread):
             # tf.compat.v1.enable_eager_execution()
             # add callback to calculate the result of accuracy
 
-            # mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
+            model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(),
+                                     model_dir=self.WORK_DIR+"/logs")
+
+            mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
 
             self.update_training_status.emit("Training network heads")
-            
+            # 
             model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=int(self.steps),
+                    epochs=47,
                     layers='heads',
-                    # custom_callbacks=[mean_average_precision_callback],
+                    custom_callbacks=[mean_average_precision_callback],
+                    augmentation = aug,
+                    )
+            self.update_training_status.emit("Fine tune Resnet stage 4 and up")
+            model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE,
+                    epochs=120,
+                    layers='4+',
+                    custom_callbacks=[mean_average_precision_callback],
+                    )
+            self.update_training_status.emit("Fine tune all layers")
+            model.train(dataset_train, dataset_val,
+                    learning_rate=config.LEARNING_RATE / 10,
+                    epochs=300,
+                    layers='all',
+                    custom_callbacks=[mean_average_precision_callback],
                     augmentation = aug,
                     )
            
@@ -339,7 +416,7 @@ class trainingThread(QtCore.QThread):
         self.update_training_status.emit("Logs: "+self.WORK_DIR+"/logs")
         # Configurations
         if self.train_mode == "train":
-            config = LiveCellConfig()
+            config = CustomConfig()
         config.display()
         
  
