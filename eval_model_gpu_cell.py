@@ -14,7 +14,7 @@ from mrcnn.config import Config
 from mrcnn.utils import compute_ap, Dataset, compute_iou
 import mrcnn.model as modellib
 from sklearn.metrics import precision_score
-from LiveCellDataset import LiveCellDataset
+
 import matplotlib.patches as patches
 from skimage import measure
 # Limit GPU memory growth
@@ -55,9 +55,9 @@ def generate_mask_subset(args):
 
 
 class GTConfig(Config):
-    NAME = "livecell"
+    NAME = "cell"
     TEST_MODE = "inference"
-    IMAGE_RESIZE_MODE = "pad64"
+    IMAGE_RESIZE_MODE = "none"
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
     NUM_CLASSES = 1 + 3
@@ -69,26 +69,17 @@ class GTConfig(Config):
 
 class InferenceConfig(Config):
     NAME = "cell"
+    DETECTION_MIN_CONFIDENCE = 0.5
     TEST_MODE = "inference"
     IMAGE_RESIZE_MODE = "pad64"
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
     NUM_CLASSES = 1 + 3
     USE_MINI_MASK = False
-    # VALIDATION_STEPS = 50
+    VALIDATION_STEPS = 50
     IMAGE_MAX_DIM = 4096
     IMAGE_MIN_DIM = 1024
-class LiveCellInferenceConfig(Config):
-    NAME = "livecell"
-    TEST_MODE = "inference"
-    IMAGE_RESIZE_MODE = "pad64"
-    GPU_COUNT = 1
-    IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
-    NUM_CLASSES = 1 + 8
-    USE_MINI_MASK = False
-    # VALIDATION_STEPS = 50
-    IMAGE_MAX_DIM = 4096
-    IMAGE_MIN_DIM = 1024
+
 from tqdm import tqdm
 
 class EvalImage():
@@ -104,80 +95,85 @@ class EvalImage():
         inches = pixels / dpi
         return inches
 
-    def evaluate_model(self, limit, plot=False):
+    def evaluate_model(self, limit, plot=True):
         precisions = []
-        class_precisions = {1: [], 2: [], 3: []} # This will now be a dictionary of lists
+        class_precisions = {1: [], 2: [], 3: []}  # This will now be a dictionary of lists
+        # Existing code
         if limit == -1:
             limit = len(self.dataset.image_ids)
         pbar = tqdm(range(limit))
-        batch_images = []
-        batch_gt_class_ids = []
-        batch_gt_bboxes = []
-        batch_gt_masks = []
         for image_id in pbar:
             # Load image and ground truth data
             image, image_meta, gt_class_id, gt_bbox, gt_mask =\
                 modellib.load_image_gt(self.dataset, self.cfg_GT,
-                                     self.dataset.image_ids[image_id])
+                                       self.dataset.image_ids[image_id])
             if gt_mask.size == 0:
+                # precisions.append(1)
                 continue
             if np.max(gt_mask) == 0:
+                # precisions.append(1)
                 continue
             molded_images = np.expand_dims(
                 modellib.mold_image(image, self.cfg_GT), 0)
-            batch_images.append(molded_images)
-            batch_gt_class_ids.append(gt_class_id)
-            batch_gt_bboxes.append(gt_bbox)
-            batch_gt_masks.append(gt_mask)
-            if len(batch_images) >= 100 or image_id == limit - 1:
-                results = self.model.detect_batch(batch_images, verbose=0)
-                for i, r in enumerate(results):
-                    # Compute AP
-                    AP, P, recall, overlaps =\
-                      compute_ap(batch_gt_bboxes[i], batch_gt_class_ids[i], batch_gt_masks[i],\
-                                  r["rois"], r["class_ids"], r["scores"], r['masks'], iou_threshold=0.5)
-                    precisions.append(AP)
-                    count = 0
-                    for class_id in r["class_ids"]:
-                      class_precisions[class_id].append(P[count]) # Store the precision for each class
-                      count+=1
-                    pbar.set_postfix({"Precision": np.mean(precisions)})
-                    if plot:
-                       # plot the results and save the figures
-                       # Get the original image size in pixels
-                       image_height, image_width = batch_images[i].shape[:2]
-                       # Convert the image size from pixels to inches
-                       image_height_inches = self.convert_pixels_to_inches(image_height)
-                       image_width_inches = self.convert_pixels_to_inches(image_width)
-                       # Set the figure size to the original image size in inches
-                       fig = plt.figure(figsize=[image_width_inches, image_height_inches])
-                       ax = fig.add_subplot(111)
-                       # Set the DPI of the plot to 300
-                       plt.rcParams["figure.dpi"] = 300
-                       # Plot the image
-                       ax.imshow(batch_images[i])
-        
-                       # Plot the GT mask
-                       for i in range(batch_gt_masks[i].shape[-1]):
-                           mask = batch_gt_masks[i][..., i]
-                           for contour in measure.find_contours(mask, 0.5):
-                               ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=2)
-                       # Plot the predicted mask
-                       for i in range(r['masks'].shape[-1]):
-                           mask = r['masks'][..., i]
-                           for contour in measure.find_contours(mask, 0.5):
-                               ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=2)
-                       # Save the plot to a file
-                       filename = os.path.join(
-                           self.output_folder, f'image_{image_id}.png')
-                       plt.savefig(filename)
-                       plt.close()
-                batch_images = []
-                batch_gt_class_ids = []
-                batch_gt_bboxes = []
-                batch_gt_masks = []
-        return np.mean(precisions), class_precisions
+            results = self.model.detect([image], verbose=0)
+            r = results[0]
+            # print(r['masks'].shape)
+            # Compute AP
 
+            AP, P, recall, overlaps = \
+                compute_ap(gt_bbox, gt_class_id, gt_mask, \
+                           r["rois"], r["class_ids"], r["scores"], r['masks'], iou_threshold=0.5)
+            
+            count = 0
+            pic_precision = []
+            for class_id in gt_class_id:
+                if class_id in r["class_ids"]:
+                    class_precisions[class_id].append(P[count])  # Store the precision for each class
+                    pic_precision.append(P[count])
+                else:
+                    class_precisions[class_id].append(0)  # Add 0 as precision if class is not detected
+                    pic_precision.append(0)
+                count += 1
+            precisions.append(np.mean(pic_precision))
+            pbar.set_postfix({"mAP": np.mean(precisions), "P": np.mean(pic_precision)})
+            if plot:
+                # plot the results and save the figures
+                # Get the original image size in pixels
+                image_height, image_width = image.shape[:2]
+                # Convert the image size from pixels to inches
+                image_height_inches = self.convert_pixels_to_inches(image_height)
+                image_width_inches = self.convert_pixels_to_inches(image_width)
+                # Set the figure size to the original image size in inches
+                fig = plt.figure(figsize=[image_width_inches, image_height_inches])
+                ax = fig.add_subplot(111)
+                # Set the DPI of the plot to 300
+                plt.rcParams["figure.dpi"] = 300
+                # Plot the image
+                ax.imshow(image)
+                # Plot the GT mask
+                for i in range(gt_mask.shape[-1]):
+                    mask = gt_mask[..., i]
+                    for contour in measure.find_contours(mask, 0.5):
+                        ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=2)
+                # Plot the predicted mask
+                for i in range(r['masks'].shape[-1]):
+                    # Plot the predicted mask that are TP and Precision is bigger than 0 in yellow
+                    if P[i] > 0 and overlaps[i].max() > 0.5:
+                        mask = r['masks'][..., i]
+                        for contour in measure.find_contours(mask, 0.5):
+                            ax.plot(contour[:, 1], contour[:, 0], '-y', linewidth=2)
+                    else:
+                        mask = r['masks'][..., i]
+                        for contour in measure.find_contours(mask, 0.5):
+                            ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=2)
+                    
+                # Save the plot to a file
+                filename = os.path.join(
+                    self.output_folder, f'image_{image_id}.png')
+                plt.savefig(filename)
+                plt.close()
+        return np.mean(precisions),class_precisions
+        # print(np.mean(precisions))
 
 
 if __name__ == "__main__":
@@ -199,7 +195,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.cpu:
         # Set to empty string to use CPU only
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     DATASET_PATH = args.dataset
     WORK_DIR = args.workdir
     LIMIT = args.limit
@@ -215,13 +211,11 @@ if __name__ == "__main__":
         mode="inference", config=InferenceConfig(), model_dir=WORK_DIR + "/logs")
     model.load_weights(weight_path, by_name=True)
     eval = EvalImage(dataset_test, model, InferenceConfig(),
-                     InferenceConfig(),  output_folder)
+                     GTConfig(),  output_folder)
     results,class_precisions = eval.evaluate_model(limit=LIMIT)
     print("Mean Precision: ", results)
-    print("Class 1 Precisions: ", np.mean(class_precisions[1]))
-    print("Class 2 Precisions: ", np.mean(class_precisions[2]))
-    print("Class 3 Precisions: ", np.mean(class_precisions[3]))
-    # print("Cell Precisions: ", np.mean(class_precisions[1]))
-    # print("Chromosome Precisions: ", np.mean(class_precisions[2]))
-    # print("Nuclear Precisions: ", np.mean(class_precisions[3]))
+    
+    print("Cell Precisions: ", np.mean(class_precisions[1]))
+    print("Chromosome Precisions: ", np.mean(class_precisions[2]))
+    print("Nuclear Precisions: ", np.mean(class_precisions[3]))
     # print(class_precisions)
