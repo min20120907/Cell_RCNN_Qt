@@ -385,7 +385,7 @@ class Dataset(object):
         return mask, class_ids
 
 
-def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square"):
+def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square",shrink_scale=None):
     """Resizes an image keeping the aspect ratio unchanged.
 
     min_dim: if provided, resizes the image such that it's smaller
@@ -487,6 +487,11 @@ def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square
         crop = (y, x, min_dim, min_dim)
         image = image[y:y + min_dim, x:x + min_dim]
         window = (0, 0, min_dim, min_dim)
+    elif mode == "shrink":
+        # Shrink the image to the specific scale
+        image = resize(image, (round(h * shrink_scale), round(w * shrink_scale)),
+                       preserve_range=True)
+        window = (0, 0, image.shape[0], image.shape[1])
     else:
         raise Exception("Mode {} not supported".format(mode))
     return image.astype(image_dtype), window, scale, padding, crop

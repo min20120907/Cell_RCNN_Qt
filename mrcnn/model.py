@@ -1451,7 +1451,7 @@ def load_image_gt(dataset, config, image_id, augmentation=None, sub_batch_size=1
         min_dim=config.IMAGE_MIN_DIM,
         min_scale=config.IMAGE_MIN_SCALE,
         max_dim=config.IMAGE_MAX_DIM,
-        mode=config.IMAGE_RESIZE_MODE)
+        mode=config.IMAGE_RESIZE_MODE, shrink_scale=config.IMAGE_RESIZE_SCALE)
     mask = utils.resize_mask(mask, scale, padding, crop)
 
     # Augmentation
@@ -1992,7 +1992,7 @@ def data_generator(dataset, config, shuffle=True, augmentation=None,
                 batch_gt_boxes = np.zeros(
                     (batch_size, config.MAX_GT_INSTANCES, 4), dtype=np.int32)
                 batch_gt_masks = np.zeros(
-                    (batch_size, 256,256,
+                    (batch_size, 1024, 1024,
                      config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
                 if random_rois:
                     batch_rpn_rois = np.zeros(
@@ -2028,7 +2028,7 @@ def data_generator(dataset, config, shuffle=True, augmentation=None,
             except:
                 # Assuming gt_masks is your ground truth masks
                 # log("Error: gt_masks.shape = {} and batch_gt_masks.shape = {}".format(gt_masks.shape, batch_gt_masks.shape))
-                gt_masks = resize(gt_masks, (256, 256, gt_masks.shape[-1]), mode='constant', preserve_range=True)
+                gt_masks = resize(gt_masks, (1024, 1024, gt_masks.shape[-1]), mode='constant', preserve_range=True)
                 batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
             if random_rois:
                 batch_rpn_rois[b] = rpn_rois
@@ -3094,7 +3094,7 @@ class MaskRCNN(object):
                 min_dim=self.config.IMAGE_MIN_DIM,
                 min_scale=self.config.IMAGE_MIN_SCALE,
                 max_dim=self.config.IMAGE_MAX_DIM,
-                mode=self.config.IMAGE_RESIZE_MODE)
+                mode=self.config.IMAGE_RESIZE_MODE, shrink_scale=self.config.IMAGE_RESIZE_SCALE)
             molded_image = mold_image(molded_image, self.config)
             # Build image_meta
             image_meta = compose_image_meta(
