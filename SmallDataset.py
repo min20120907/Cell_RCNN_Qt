@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import ray
 @ray.remote
-def load_annotations(annotation, subset_dir, class_id):
+def load_annotations(annotation, subset_dir):
     # Load annotations from JSON file
     annotations = json.load(open(os.path.join(subset_dir, annotation)))
     annotations = list(annotations.values()) 
@@ -22,16 +22,8 @@ def load_annotations(annotation, subset_dir, class_id):
         # shape_attributes (see JSON format above)
         if type(a['regions']) is dict:
             polygons = [r['shape_attributes'] for r in a['regions'].values()]
-            objects = [s['region_attributes'] for s in a['regions'].values()]
         else:
             polygons = [r['shape_attributes'] for r in a['regions']]
-            objects = [s['region_attributes'] for s in a['regions']]
-        num_ids = []
-        for _ in objects:
-            try:
-                num_ids.append(class_id)
-            except:
-                pass
         # load_mask() needs the image size to convert polygons to masks.
         # Unfortunately, VIA doesn't include it in JSON, so we must read
         # the image. This is only manageable since the dataset is tiny.
@@ -45,7 +37,7 @@ def load_annotations(annotation, subset_dir, class_id):
             'width': width,
             'height': height,
             'polygons': polygons,
-            'num_ids': num_ids
+            'num_ids': a['num_ids']
         })
 
     return images
@@ -66,7 +58,7 @@ def process_polygon(p, height, width):
     draw_mask = np.where(draw_mask > 0, 1, 0)
 
     return draw_mask
-class CustomDataset(utils.Dataset):
+class SmallDataset(utils.Dataset):
     @property
     def image_ids(self):
        return self._image_ids
@@ -93,11 +85,8 @@ class CustomDataset(utils.Dataset):
                 yield ray.get(done[0])
         
         # Load annotations from all JSON files using Ray multiprocessing
-        annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
-        futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a] + \
-                    [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a]
-        #             [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
-        # futures =   [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+        annotations = [f for f in os.listdir(subset_dir) if f.endswith(".json")]
+        futures = [load_annotations.remote(annotations[0], subset_dir)] 
         # Showing the progressbar
         for _ in tqdm(to_iterator(futures), total=len(futures)):
             pass
@@ -109,12 +98,12 @@ class CustomDataset(utils.Dataset):
             for image in images:
                 self.add_image(
                     'cell',
-                    image_id=image['image_id'],  # use file name as a unique image id
+                    image_id=image['id'],  # use file name as a unique image id
                     path=image['path'],
                     width=image['width'], height=image['height'],
                     polygons=image['polygons'],
                     num_ids=image['num_ids'])
-    def load_mask_old(self, image_id):
+    def load_mask(self, image_id):
         info = self.image_info[image_id]
         mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
                         dtype=np.uint8)
@@ -144,36 +133,6 @@ class CustomDataset(utils.Dataset):
         # Save the dictionary to a JSON file
         with open(f"{subset}.json", "w") as f:
             json.dump(images, f)
-
-
-    def load_mask(self, image_id):
-        """Generate instance masks for an image.
-        Returns:
-        masks: A bool array of shape [height, width, instance count] with
-            one mask per instance.
-        class_ids: a 1D array of class IDs of the instance masks.
-        """
-
-        # Convert polygons to a bitmap mask of shape
-        # [height, width, instance_count]
-        info = self.image_info[image_id]
-        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                        dtype=np.uint8)
-        for i, p in enumerate(info["polygons"]):
-            # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-            # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-            try:
-                mask[rr, cc, i] = 1
-            except:
-                rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
-                cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
-                mask[rr, cc, i] = 1
-                # print("Error Occured")
-                # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-        # Return mask, and array of class IDs of each instance. Since we have
-        # one class ID only, we return an array of 1s
-        return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
 
 
     def image_reference(self, image_id):

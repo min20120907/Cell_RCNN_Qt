@@ -2,7 +2,10 @@ import os
 import cv2
 import numpy as np
 from tqdm import tqdm
+from cellpose import io,models
+from CustomCroppingDataset import CustomCroppingDataset
 from CustomDataset import CustomDataset
+
 def generate_unique_colors(num_colors):
     colors = np.zeros((num_colors,  3), dtype=np.uint8)
     for i in range(num_colors):
@@ -11,6 +14,7 @@ def generate_unique_colors(num_colors):
         b = int(255 * np.sin(i / num_colors *  2 * np.pi +  2 * np.pi /  3))
         colors[i] = (r, g, b)
     return colors
+# model = models.Cellpose(gpu=True, model_type='cyto')
 def save_images_and_masks(dataset, image_folder, mask_folder):
     """
     Save images and masks from a dataset to specified folders.
@@ -38,7 +42,7 @@ def save_images_and_masks(dataset, image_folder, mask_folder):
         cv2.imwrite(image_path, image)
 
         # Save mask
-        mask_path = os.path.join(mask_folder, f"{image_id}_mask.png")
+        mask_path = os.path.join(mask_folder, f"{image_id}_masks.png")
         
         # Define a custom color map for each ROI
         num_rois = mask.shape[-1]
@@ -56,15 +60,16 @@ def save_images_and_masks(dataset, image_folder, mask_folder):
 
         # Save the merged colored mask
         cv2.imwrite(mask_path, colored_mask)
+        
 
 # Example usage:
-dataset = CustomDataset()
+dataset = CustomCroppingDataset()
 dataset.load_custom('/home/e814/Documents/dataset-png', "train")
 dataset.prepare()
 
 # Specify where to save the images and masks
-image_folder = "/mnt/1TB-DISK-2/cellpose_dataset/images/"
-mask_folder = "/mnt/1TB-DISK-2/cellpose_dataset/masks/"
+image_folder = "/mnt/1TB-DISK-2/cellpose_dataset/cropped-dataset/"
+mask_folder = "/mnt/1TB-DISK-2/cellpose_dataset/cropped-dataset/"
 
 # Call the function to save images and masks
 save_images_and_masks(dataset, image_folder, mask_folder)

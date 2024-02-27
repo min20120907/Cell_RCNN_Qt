@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 import skimage
 from tqdm import tqdm
 from mrcnn import utils
@@ -6,6 +7,7 @@ import os
 import cv2
 import numpy as np
 import ray
+import os
 import skimage.transform
 
 def remove_file_extension(filename):
@@ -111,7 +113,7 @@ def crop_by_polygon(image, polygon):
   right = dst_size - cropped_image.shape[1]
   padded_image = cv2.copyMakeBorder(cropped_image, 0, bottom, 0, right, cv2.BORDER_CONSTANT, value=[0,0,0])
 
-  return padded_image, polygon
+  return padded_image, polygon #temporarily return cropped_image
 
 def crop_by_group(image, group):
   # Crop the image by the borders of the group, and update the polygons
@@ -170,7 +172,7 @@ def load_annotations(annotation, subset_dir, class_id):
     image_path = os.path.join(subset_dir, a['filename'])
     image = skimage.io.imread(image_path)
     height, width = image.shape[:2]
-    output_dir = "/mnt/1TB-DISK-2/dataset-sq"
+    output_dir = "/home/e814/Documents/dataset-sq"
     # Add images
 
     # Group polygons
@@ -212,12 +214,38 @@ def load_annotations(annotation, subset_dir, class_id):
             cropped_image_dictionaries.append(cropped_image_dictionary)
     images.extend(cropped_image_dictionaries)
   return images
+@ray.remote
+def process_polygon(p, height, width):
+    # Convert the polygon points to the correct shape
+    pts = np.vstack((p['all_points_x'], p['all_points_y'])).astype(np.int32).T
 
+    # Validate and clip the coordinates to the valid range
+    pts[:, 0] = np.clip(pts[:, 0], 0, width - 1)
+    pts[:, 1] = np.clip(pts[:, 1], 0, height - 1)
+
+    # Draw the polygon on the mask using fillPoly
+    draw_mask = np.zeros([height, width, 3], dtype=np.uint8)
+    cv2.fillPoly(draw_mask, [pts], color=(255, 255, 255))
+
+    draw_mask = cv2.cvtColor(draw_mask, cv2.COLOR_BGR2GRAY)
+    draw_mask = np.where(draw_mask > 0, 1, 0)
+
+    return draw_mask
 class CustomCroppingDataset(utils.Dataset):
+  def convert_numpy_to_python(self, obj):
+    """Converts numpy types to native Python types."""
+    if isinstance(obj, (np.generic, np.ndarray)):
+        return obj.item()
+    elif isinstance(obj, dict):
+        return {k: self.convert_numpy_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [self.convert_numpy_to_python(item) for item in obj]
+    else:
+        return obj
   @property
   def image_ids(self):
      return self._image_ids
-  
+
   @image_ids.setter
   def image_ids(self, value):
      self._image_ids = value
@@ -229,7 +257,7 @@ class CustomCroppingDataset(utils.Dataset):
         # Add classes. We have only one class to add.
         self.add_class("cell", 1, "cell")
         self.add_class("cell", 2, "chromosome")
-        self.add_class("cell", 3, "nuclear")
+        # self.add_class("cell", 3, "nuclear")
         # Train or validation dataset?
         assert subset in ["train", "val", "test"]
         subset_dir = os.path.join(dataset_dir, subset)
@@ -243,7 +271,7 @@ class CustomCroppingDataset(utils.Dataset):
         annotations = [f for f in os.listdir(subset_dir) if f.startswith("via_region_") and f.endswith(".json")]
         futures = [load_annotations.remote(a, subset_dir, 1) for a in annotations if "data_" in a]
         futures += [load_annotations.remote(a, subset_dir, 2) for a in annotations if "chromosome_" in a]
-        futures += [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
+        # futures = [load_annotations.remote(a, subset_dir, 3) for a in annotations if "nuclear_" in a]
         # Showing the progressbar
         for _ in tqdm(to_iterator(futures), total=len(futures)):
             pass
@@ -262,36 +290,63 @@ class CustomCroppingDataset(utils.Dataset):
                     width=image['width'], height=image['height'],
                     polygons=image['polygons'],
                     num_ids=image['num_ids'])
-
-  def load_mask(self, image_id):
-        """Generate instance masks for an image.
-        Returns:
-        masks: A bool array of shape [height, width, instance count] with
-            one mask per instance.
-        class_ids: a 1D array of class IDs of the instance masks.
-        """
-
-        # Convert polygons to a bitmap mask of shape
-        # [height, width, instance_count]
+  def save_mask(self, mask, image_id, output_dir):
+    filename = os.path.splitext(os.path.basename(self.image_info[image_id]['path']))[0]
+    filename = filename + "_mask.png"
+    output_path = os.path.join(output_dir, filename)
+    cv2.imwrite(output_path, mask)
+  def load_mask_old(self, image_id):
         info = self.image_info[image_id]
         mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
                         dtype=np.uint8)
-        for i, p in enumerate(info["polygons"]):
-            # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-            # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-            try:
-                mask[rr, cc, i] = 1
-            except:
-                rr = np.clip(rr, 0, info["height"] - 1)  # Clip row indices to valid range
-                cc = np.clip(cc, 0, info["width"] - 1)   # Clip column indices to valid range
-                mask[rr, cc, i] = 1
-                # print("Error Occured")
-                # print(f"i={i}, rr={rr}, cc={cc}, len(cc)={len(cc)}")
-        # Return mask, and array of class IDs of each instance. Since we have
-        # one class ID only, we return an array of 1s
-        return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
+        height = info["height"]
+        width = info["width"]
+        results = ray.get([process_polygon.remote(p, height, width) for _, p in enumerate(info["polygons"])])
 
+        for i, result in enumerate(results):
+            mask[:, :, i] = result
+        return mask.astype(np.bool), np.array(info['num_ids'], dtype=np.int32)
+  def load_mask(self, image_id):
+    info = self.image_info[image_id]
+    mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+            dtype=np.uint8)
+
+    for i, p in enumerate(info["polygons"]):
+      # Convert the polygon points to the correct shape
+      pts = np.vstack((p['all_points_x'], p['all_points_y'])).astype(np.int32).T
+      
+      # Validate and clip the coordinates to the valid range
+      pts[:, 0] = np.clip(pts[:, 0], 0, info["width"] - 1)
+      pts[:, 1] = np.clip(pts[:, 1], 0, info["height"] - 1)
+
+      # Draw the polygon on the mask using fillPoly
+      # fix Expected Ptr<cv::UMat> for argument 'img'
+      draw_mask = np.zeros([info["height"], info["width"], 3], dtype=np.uint8)
+      cv2.fillPoly(draw_mask, [pts], color=(255, 255, 255))
+      
+      draw_mask = cv2.cvtColor(draw_mask, cv2.COLOR_BGR2GRAY)
+      draw_mask = np.where(draw_mask > 0, 1, 0)
+      mask[:, :, i] = draw_mask
+    
+    return mask, np.array(info['num_ids'], dtype=np.int32)
+  # save the json file according to the list of images in the dataset
+  def save_json(self, subset):
+    # Create a dictionary with the image information
+    images = []
+    for image_id in self.image_ids:
+        info = self.image_info[image_id]
+        images.append({
+            "id": int(image_id),  # Convert int64 to int
+            "path": info["path"],
+            "width": int(info["width"]),  # Convert int64 to int
+            "height": int(info["height"]),  # Convert int64 to int
+            "polygons": [self.convert_numpy_to_python(polygon) for polygon in info["polygons"]],
+            "num_ids": [int(num_id) for num_id in info["num_ids"]]  # Convert int64 to int
+        })
+    print("Saving JSON file...")
+    # Save the dictionary to a JSON file
+    with open(f"{subset}.json", "w") as f:
+        json.dump(images, f)
   def image_reference(self, image_id):
     """Return the path of the image."""
     info = self.image_info[image_id]
