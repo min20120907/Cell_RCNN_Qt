@@ -129,7 +129,7 @@ This project includes a script to evaluate your model's performance using the Me
 2.  **Run the Evaluation Script:**
     Open your terminal (make sure your virtual environment is activated) and run the `eval_model.py` script. You will need to provide paths to your model and dataset.
     ```bash
-    python eval_model_gpu_cell.py --weights="/path/to/your/trained_model.h5" --dataset="/path/to/your/validation_dataset"
+    python eval_model_gpu_cell.py --work_dir . --weights="/path/to/your/trained_model.h5" --dataset="/path/to/your/validation_dataset" --ouput_folder "/path/to/your/output_folder"
     ```
 3.  **Analyze the Results:**
     The script will output the mAP scores for different IoU (Intersection over Union) thresholds, giving you a quantitative measure of your model's accuracy.
