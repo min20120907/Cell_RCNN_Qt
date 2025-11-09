@@ -39,7 +39,7 @@ Let's get the application up and running on your system.
 
 1.  **Clone the Repository**
     ```bash
-    git clone [https://github.com/min20120907/Cell_RCNN_Qt.git](https://github.com/min20120907/Cell_RCNN_Qt.git)
+    git clone https://github.com/min20120907/Cell_RCNN_Qt.git
     cd Cell_RCNN_Qt
     ```
 
