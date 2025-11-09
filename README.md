@@ -46,13 +46,15 @@ Let's get the application up and running on your system.
 2.  **Set Up a Virtual Environment (Highly Recommended!)**
     ```bash
     # Create and activate the environment
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+    conda create --name myenv python=3.7
+    conda activate myenv
+    conda install cudatoolkit=11.7 cudnn=8
     ```
 
 3.  **Install Dependencies**
     This project requires specific versions of TensorFlow and Keras. The `requirements.txt` file handles this for you.
     ```bash
+    conda activate myenv
     pip install -r requirements.txt
     ```
 
@@ -73,7 +75,7 @@ The model needs annotations in the COCO `.json` format. This tool provides a uti
 
 1.  **Launch the Application:**
     ```bash
-    python main.py
+    python Cell_Trainer.py
     ```
 2.  **Open the Converter:**
     * Click the **`Convert ImageJ ROIs`** button.
@@ -127,7 +129,7 @@ This project includes a script to evaluate your model's performance using the Me
 2.  **Run the Evaluation Script:**
     Open your terminal (make sure your virtual environment is activated) and run the `eval_model.py` script. You will need to provide paths to your model and dataset.
     ```bash
-    python eval_model.py --weights="/path/to/your/trained_model.h5" --dataset="/path/to/your/validation_dataset"
+    python eval_model_gpu_cell.py --weights="/path/to/your/trained_model.h5" --dataset="/path/to/your/validation_dataset"
     ```
 3.  **Analyze the Results:**
     The script will output the mAP scores for different IoU (Intersection over Union) thresholds, giving you a quantitative measure of your model's accuracy.
