@@ -135,6 +135,40 @@ This project includes a script to evaluate your model's performance using the Me
     The script will output the mAP scores for different IoU (Intersection over Union) thresholds, giving you a quantitative measure of your model's accuracy.
 
 ---
+Here is the updated section. I have added a **Troubleshooting** section immediately following the installation steps. This is the standard place to put fixes for environment conflicts like the OpenCV/Qt xcb error.
+
+You can copy and paste the section below into your README.
+
+-----
+
+## ⚠️ Troubleshooting: Common Issues
+
+### ❌ Error: "Could not load the Qt platform plugin 'xcb'"
+
+If you try to run the application and receive an error message related to the **xcb** plugin (e.g., `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"`), this is a common conflict between the Qt libraries bundled with **OpenCV** and **PyQt5**.
+
+**The Fix:**
+You need to remove the duplicate Qt plugins found inside your OpenCV installation so that the system uses the correct PyQt5 plugins.
+
+1.  Locate your environment's `site-packages` directory.
+2.  Find the `cv2` folder.
+3.  Delete (or rename) the `qt` folder or the specific `libqxcb.so` file inside it.
+
+**Example command (Linux/Mac):**
+
+```bash
+# Adjust the path to match your specific environment location
+rm ~/anaconda3/envs/myenv/lib/python3.7/site-packages/cv2/qt/plugins/platforms/libqxcb.so
+```
+
+Once removed, run `python Cell_Trainer.py` again, and the GUI should launch correctly\!
+
+-----
+
+### Where to place this?
+
+I recommend placing this new section **immediately after** the **"🚀 Getting Started: Installation"** section and **before** the **"📖 Step-by-Step Guide"**. This ensures users see it right after they finish installing dependencies, which is when the error usually occurs.
+
 
 ## 📜 License
 
