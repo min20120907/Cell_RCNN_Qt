@@ -6,96 +6,57 @@ import skimage.io
 import imgaug.augmenters as iaa
 import skimage
 import time
-#PyQt5 Dependencies
 from PyQt5 import QtCore
-#UI
-#time
 import json
 import cv2
-from tqdm import tqdm
-import json
 import ray
 from CustomCroppingDataset import CustomCroppingDataset
 from CustomDataset import CustomDataset
-from LiveCellCroppingDataset import LiveCellCroppingDataset
-from LiveCellDataset import LiveCellDataset
 from mrcnn import model as modellib, utils
 import tensorflow.keras as keras
-
 from solve_cudnn_error import *
-from multiprocessing import Pool, cpu_count
-# from mrcnn.MeanAveragePrecisionCallback import MeanAveragePrecisionCallback
 from tensorflow.keras import backend as K
-import sys
-sys.setrecursionlimit(5000)  # Set a higher recursion limit
-# Configure the TensorFlow cluster
-# cluster_spec = tf.train.ClusterSpec({
-#     'worker': ['192.168.50.227:12345', '192.168.50.65:12345']
-# })
-# 
-# # Create a server for the current node
-# server = tf.distribute.Server(cluster_spec, job_name='worker', task_index=0)
-# # Set number of intra-op and inter-op parallelism threads
-# tf.config.threading.set_intra_op_parallelism_threads(32)
-# tf.config.threading.set_inter_op_parallelism_threads(32)
-# 
-# # Allow GPU memory growth
-# gpus = tf.config.experimental.list_physical_devices('GPU')
-# if gpus:
-#     try:
-#         for gpu in gpus:
-#             tf.config.experimental.set_memory_growth(gpu, True)
-#     except RuntimeError as e:
-#         print(e)
-# 
-# # Set Keras session to the current TensorFlow session
-# tf.compat.v1.keras.backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto()))
 import signal
+import logging
 
+sys.setrecursionlimit(5000)
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
-def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
- # Calculate the sizes of each set
- train_size = int(len(dataset.image_ids) * train_percentage)
- val_size = int(len(dataset.image_ids) * val_percentage)
- test_size = len(dataset.image_ids) - train_size - val_size
 
- # Shuffle the dataset
- shuffled_image_ids = np.random.permutation(dataset.image_ids)
+# Limit GPU memory growth
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
 
- # Split the dataset
- train_set = CustomCroppingDataset()
- train_set.prepare()
- train_set.image_ids = shuffled_image_ids[:train_size]
- train_set.image_info = {id: dataset.image_info[id] for id in train_set.image_ids}
- train_set.class_info = dataset.class_info
- train_set.source_class_ids = dataset.source_class_ids
- train_set.num_classes = dataset.num_classes
- 
+# --- Custom Callbacks for GUI ---
 
- val_set = CustomCroppingDataset()
- val_set.prepare()
- val_set.image_ids = shuffled_image_ids[train_size:train_size + val_size]
- val_set.image_info = {id: dataset.image_info[id] for id in val_set.image_ids}
- val_set.class_info = dataset.class_info
- val_set.source_class_ids = dataset.source_class_ids
- val_set.num_classes = dataset.num_classes
+class KerasQtProgressBar(tf.keras.callbacks.Callback):
+    def __init__(self, thread_instance):
+        super().__init__()
+        self.thread = thread_instance
 
- test_set = CustomCroppingDataset()
- test_set.prepare()
- test_set.image_ids = shuffled_image_ids[train_size + val_size:]
- test_set.image_info = {id: dataset.image_info[id] for id in test_set.image_ids}
- test_set.class_info = dataset.class_info
- test_set.source_class_ids = dataset.source_class_ids
- test_set.num_classes = dataset.num_classes
- return train_set, val_set, test_set
-############################################################
-#  Custom Callbacks
-############################################################
-from tensorflow.keras.callbacks import Callback
-class MeanAveragePrecisionCallback(Callback):
-    def __init__(self, train_model: modellib.MaskRCNN, inference_model: modellib.MaskRCNN, dataset: utils.Dataset,
+    def on_epoch_begin(self, epoch, logs=None):
+        if "steps" in self.params:
+            self.thread.progressBar_setMaximum.emit(self.params['steps'])
+        self.thread.progressBar.emit(0)
+
+    def on_batch_end(self, batch, logs=None):
+        self.thread.progressBar.emit(batch + 1)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Print a clean summary line instead of the spammy progress bar
+        # Format: Epoch 1: loss: 0.5 - val_loss: 0.4
+        log_items = [f"{k}: {v:.4f}" for k, v in logs.items() if isinstance(v, (int, float))]
+        summary = f"Epoch {epoch + 1}: " + " - ".join(log_items)
+        print(summary) # This goes to the GUI text box via StreamRedirector
+
+class MeanAveragePrecisionCallback(tf.keras.callbacks.Callback):
+    def __init__(self, train_model, inference_model, dataset,
                  calculate_map_at_every_X_epoch=1, dataset_limit=None,
-                 verbose=1):
+                 verbose=1, thread_instance=None):
         super().__init__()
         self.train_model = train_model
         self.inference_model = inference_model
@@ -105,6 +66,7 @@ class MeanAveragePrecisionCallback(Callback):
         if dataset_limit is not None:
             self.dataset_limit = dataset_limit
         self.dataset_image_ids = self.dataset.image_ids.copy()
+        self.thread = thread_instance 
 
         if inference_model.config.BATCH_SIZE != 1:
             raise ValueError("This callback only works with the bacth size of 1")
@@ -118,27 +80,34 @@ class MeanAveragePrecisionCallback(Callback):
         mAP = np.mean(mAPs)
         if logs is not None:
             logs["mean_average_precision"] = mAP
-
-            self._verbose_print("mAP at epoch {0} is: {1}".format(epoch+1, mAP))
+            self._verbose_print("mAP at epoch {0} is: {1:.4f}".format(epoch+1, mAP))
+        
+        # Reset progress bar for next epoch
+        if self.thread and "steps" in self.params:
+             self.thread.progressBar_setMaximum.emit(self.params['steps'])
 
         super().on_epoch_end(epoch, logs)
 
     def _load_weights_for_model(self):
         last_weights_path = self.train_model.find_last()
-        self._verbose_print("Loaded weights for the inference model (last checkpoint of the train model): {0}".format(
-            last_weights_path))
-        self.inference_model.load_weights(last_weights_path,
-                                          by_name=True)
+        self.inference_model.load_weights(last_weights_path, by_name=True)
 
     def _calculate_mean_average_precision(self):
         class_APs = {}
         overall_APs = []
-        overall_ARs = []
-        overall_IoUs = []
         
         np.random.shuffle(self.dataset_image_ids)
+        target_ids = self.dataset_image_ids[:self.dataset_limit]
         
-        for image_id in tqdm(self.dataset_image_ids[:self.dataset_limit], desc='Calculating mAP, AR, IoU'):
+        # Use GUI progress bar for mAP calculation
+        if self.thread:
+            self.thread.progressBar_setMaximum.emit(len(target_ids))
+            self.thread.progressBar.emit(0)
+
+        for i, image_id in enumerate(target_ids):
+            if self.thread:
+                self.thread.progressBar.emit(i + 1)
+            
             image, image_meta, gt_class_id, gt_bbox, gt_mask = modellib.load_image_gt(self.dataset, self.inference_model.config, image_id)
             molded_images = np.expand_dims(modellib.mold_image(image, self.inference_model.config), 0)
             results = self.inference_model.detect(molded_images, verbose=0)
@@ -148,45 +117,45 @@ class MeanAveragePrecisionCallback(Callback):
                                                   r["class_ids"], r["scores"], r['masks'])
                 class_APs[class_id] = AP
                 overall_APs.append(AP)
-                overall_ARs.extend(recalls)
-                overall_IoUs.extend(overlaps)
         
-        class_mAPs = {class_id: AP for class_id, AP in class_APs.items()}
-        overall_mAP = np.mean(overall_APs)
-        
-        for class_id, mAP in class_mAPs.items():
-            print(f"mAP for class {class_id}: {mAP:.4f}")
-        
-        overall_AR = np.mean(overall_ARs)
-        overall_IoU = np.mean(overall_IoUs)
-        print(f"Overall mAP: {overall_mAP:.4f}")
-        print(f"Overall AR: {overall_AR:.4f}")
-        print(f"Overall IoU: {overall_IoU:.4f}")
-        print(f"Overall mAP: {overall_mAP:.4f}")
+        return overall_APs
 
+def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
+    train_size = int(len(dataset.image_ids) * train_percentage)
+    val_size = int(len(dataset.image_ids) * val_percentage)
+    shuffled_image_ids = np.random.permutation(dataset.image_ids)
 
+    train_set = CustomCroppingDataset()
+    train_set.prepare()
+    train_set.image_ids = shuffled_image_ids[:train_size]
+    train_set.image_info = {id: dataset.image_info[id] for id in train_set.image_ids}
+    train_set.class_info = dataset.class_info
+    train_set.source_class_ids = dataset.source_class_ids
+    train_set.num_classes = dataset.num_classes
 
-# Limit GPU memory growth
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        print(e)
+    val_set = CustomCroppingDataset()
+    val_set.prepare()
+    val_set.image_ids = shuffled_image_ids[train_size:train_size + val_size]
+    val_set.image_info = {id: dataset.image_info[id] for id in val_set.image_ids}
+    val_set.class_info = dataset.class_info
+    val_set.source_class_ids = dataset.source_class_ids
+    val_set.num_classes = dataset.num_classes
 
-def generate_mask_subset(args):
-    height, width, subset = args
-    mask = np.zeros([height, width, len(subset)], dtype=np.uint8)
-    for i, j in enumerate(range(subset[0], subset[1])):
-        start = subset[j]['all_points'][:-1]
-        rr, cc = skimage.draw.polygon(start[:, 1], start[:, 0])
-        mask[rr, cc, i] = 1
-    return mask
-
+    test_set = CustomCroppingDataset()
+    test_set.prepare()
+    test_set.image_ids = shuffled_image_ids[train_size + val_size:]
+    test_set.image_info = {id: dataset.image_info[id] for id in test_set.image_ids}
+    test_set.class_info = dataset.class_info
+    test_set.source_class_ids = dataset.source_class_ids
+    test_set.num_classes = dataset.num_classes
+    return train_set, val_set, test_set
 
 
 class trainingThread(QtCore.QThread):
+    update_training_status = QtCore.pyqtSignal(str)
+    progressBar = QtCore.pyqtSignal(int)
+    progressBar_setMaximum = QtCore.pyqtSignal(int)
+
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):
         super(trainingThread, self).__init__(parent)
@@ -198,129 +167,51 @@ class trainingThread(QtCore.QThread):
         self.dataset_path = dataset_path
         self.train_mode = train_mode
         self.steps = steps
-    update_training_status = QtCore.pyqtSignal(str)
     
     def run(self):
-        # ray.init(
-        # _system_config={
-        #     "object_spilling_config": json.dumps(
-        #         {
-        #           "type": "filesystem",
-        #           "params": {
-        #             # Multiple directories can be specified to distribute
-        #             # IO across multiple mounted physical devices.
-        #             "directory_path": [
-        #               "/mnt/800GB-DISK-1/ray/spill",
-        #             ]
-        #           },
-        #         }
-        #     ),
-        # },
-        # ignore_reinit_error=True, 
-        # object_store_memory=2*1024**3,_memory=32*1024**3,
-        # )
         from ray.util.joblib import register_ray
-
         register_ray()
-        ray.init()
-        # Get the physical devices and set memory growth for GPU devices
+        
+        # FIXED: Silence Ray Output
+        ray.init(ignore_reinit_error=True, logging_level=logging.ERROR, log_to_driver=False) 
+        
         physical_devices = tf.config.list_physical_devices('GPU')
         if len(physical_devices) > 0:
             for device in physical_devices:
                 tf.config.experimental.set_memory_growth(device, True)
         solve_cudnn_error()
         self.update_training_status.emit("Training started!")
-        print("started input stream")
-        # Root directory of the project
+        
         ROOT_DIR = os.path.abspath(self.WORK_DIR)
-
-        # Import Mask RCNN
-        sys.path.append(ROOT_DIR)  # To find local version of the library
+        sys.path.append(ROOT_DIR)
         from mrcnn.config import Config
         from mrcnn import utils
-
-        # Path to trained weights file
         COCO_WEIGHTS_PATH = os.path.join(self.weight_path)
-
-        # Directory to save logs and model checkpoints, if not provided
-        # through the command line argument --logs
-        DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
         
-        ############################################################
-        #  Configurations
-        ############################################################
         class EvalInferenceConfig(Config):
             NAME = "cell"
             TEST_MODE = "inference"
             IMAGE_RESIZE_MODE = "pad64"
             GPU_COUNT = 1
-            IMAGES_PER_GPU = 1  # Change this to a lower value, e.g., 1
+            IMAGES_PER_GPU = 1 
             NUM_CLASSES = 1 + 3
             USE_MINI_MASK = False
-            # VALIDATION_STEPS = 50
             IMAGE_MAX_DIM = 4096
             IMAGE_MIN_DIM = 1024
         class CustomConfig(Config):
-            """Configuration for training on the toy  dataset.
-            Derives from the base Config class and overrides some values.
-            """
             MAX_GT_INSTANCES = 10
             IMAGE_RESIZE_MODE = "square"
-            # Give the configuration a recognizable name
             NAME = "cell"
-            # We use a GPU with 12GB memory, which can fit two images.
-            # Adjust down if you use a smaller GPU.
             IMAGES_PER_GPU = 12
-            # IMAGE_CHANNEL_COUNT = 1
             USE_MINI_MASK = False
-            # Number of classes (including background)
-            NUM_CLASSES = 1 + 3 # Background + cell + chromosome
-            # NUM_CLASSES = 1 + 1 # Background + cell
-            # Number of training steps per epoch
+            NUM_CLASSES = 1 + 3 
             STEPS_PER_EPOCH = self.epoches
             IMAGE_MAX_DIM = 256
             IMAGE_MIN_DIM = 256
-            # Backbone network architecture
             BACKBONE = "resnet101"
-
-            # Number of validation steps per epoch
             VALIDATION_STEPS = 50
-        class LiveCellConfig(Config):
-            """Configuration for training on the toy  dataset.
-            Derives from the base Config class and overrides some values.
-            """
-            MAX_GT_INSTANCES = 100
-            IMAGE_RESIZE_MODE = "square"
-            # Give the configuration a recognizable name
-            NAME = "livecell"
-            # We use a GPU with 12GB memory, which can fit two images.
-            # Adjust down if you use a smaller GPU.
-            IMAGES_PER_GPU = 12
-            # IMAGE_CHANNEL_COUNT = 1
-#            GPU_COUNT = 2
-            USE_MINI_MASK = False
-            # Number of classes (including background)
-            NUM_CLASSES = 1 + 8 # Background + cell + chromosome
-            # NUM_CLASSES = 1 + 1 # Background + cell
-            # Number of training steps per epoch
-            STEPS_PER_EPOCH = self.epoches
-            IMAGE_MAX_DIM = 256
-            IMAGE_MIN_DIM = 256
-            # Backbone network architecture
-            BACKBONE = "resnet101"
-
-            # Number of validation steps per epoch
-            VALIDATION_STEPS = 50
-
-
-        ############################################################
-        #  Dataset
-        ############################################################
 
         def train(model):
-
-            
-            """Train the model."""
             split= True
             if split:
                 dataset = CustomCroppingDataset()
@@ -328,117 +219,99 @@ class trainingThread(QtCore.QThread):
                 dataset.load_custom(self.dataset_path, "val")
                 dataset.load_custom(self.dataset_path, "test")
                 dataset.prepare()
-                # Split the dataset into train, validation, and test
                 train_set, val_set, test_set = split_dataset(dataset, 0.7, 0.15, 0.15)
-                # Training dataset
                 dataset_train = train_set
-                # Validation dataset
                 dataset_val = val_set
-                # testing dataset
                 dataset_test = test_set
             else:
-                # Training dataset.
                 print("Loading training dataset")
                 dataset_train = CustomCroppingDataset()
                 dataset_train.load_custom(self.dataset_path,"train")
-
                 dataset_train.prepare()
                 print("Loading validation dataset")
-                # Validation dataset
                 dataset_val = CustomCroppingDataset()
                 dataset_val.load_custom(self.dataset_path, "val")
-                print("Loading testing dataset")
                 dataset_val.prepare()
-                # testing dataset
+                print("Loading testing dataset")
                 dataset_test = CustomDataset()
                 dataset_test.load_custom(self.dataset_path, "test")
                 dataset_test.prepare()
-            # *** This training schedule is an example. Update to your needs ***
-            # Since we're using a very small dataset, and starting from
-            # COCO trained weights, we don't need to train too long. Also,
-            # no need to train all layers, just the heads should do it.
+
             aug = iaa.Sometimes(5/6, iaa.OneOf([
                         iaa.Fliplr(1),
                         iaa.Flipud(1),
                         iaa.Affine(rotate=(-45, 45)),
                         iaa.Affine(rotate=(-90, 90)),
                         iaa.Affine(scale=(0.5, 1.5)),
-                        iaa.Fliplr(0.5), # 左右翻轉概率為0.5
-                        iaa.Flipud(0.5), # 上下翻轉概率為0.5
-                        iaa.Affine(rotate=(-10, 10)), # 隨機旋轉-10°到10°
-                        iaa.Affine(scale=(0.8, 1.2)), # 隨機縮放80%-120%
-                        iaa.Crop(percent=(0, 0.1)), # 隨機裁剪，裁剪比例為0%-10%
-                        iaa.GaussianBlur(sigma=(0, 0.5)), # 高斯模糊，sigma值在0到0.5之間
-                        iaa.AdditiveGaussianNoise(scale=(0, 0.05*255)), # 添加高斯噪聲，噪聲標準差為0到0.05的像素值
-                        iaa.LinearContrast((0.5, 1.5)), # 對比度調整，調整因子為0.5到1.5
+                        iaa.Fliplr(0.5),
+                        iaa.Flipud(0.5),
+                        iaa.Affine(rotate=(-10, 10)),
+                        iaa.Affine(scale=(0.8, 1.2)),
+                        iaa.Crop(percent=(0, 0.1)),
+                        iaa.GaussianBlur(sigma=(0, 0.5)),
+                        iaa.AdditiveGaussianNoise(scale=(0, 0.05*255)),
+                        iaa.LinearContrast((0.5, 1.5)),
                         ]))
-            # tf.compat.v1.enable_eager_execution()
-            # add callback to calculate the result of accuracy
 
             model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(),
                                      model_dir=self.WORK_DIR+"/logs")
-
-            mean_average_precision_callback = MeanAveragePrecisionCallback(model, model_inference, dataset_test, calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100)
+            
+            # --- CALLBACKS ---
+            mean_average_precision_callback = MeanAveragePrecisionCallback(
+                model, model_inference, dataset_test, 
+                calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100,
+                thread_instance=self
+            )
+            # Link Keras progress to GUI
+            qt_progress_callback = KerasQtProgressBar(self)
 
             self.update_training_status.emit("Training network heads")
-            # 
+            
+            # FIXED: verbose=0 to silence spammy ASCII progress bars in console
             model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
                     epochs=47,
                     layers='heads',
-                    custom_callbacks=[mean_average_precision_callback],
+                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
                     augmentation = aug,
+                    verbose=0 
                     )
             self.update_training_status.emit("Fine tune Resnet stage 4 and up")
+            
+            # FIXED: verbose=0
             model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
                     epochs=120,
                     layers='4+',
-                    custom_callbacks=[mean_average_precision_callback],
+                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
+                    verbose=0
                     )
             self.update_training_status.emit("Fine tune all layers")
+            
+            # FIXED: verbose=0
             model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE / 10,
                     epochs=300,
                     layers='all',
-                    custom_callbacks=[mean_average_precision_callback],
+                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
                     augmentation = aug,
+                    verbose=0
                     )
-           
-        ############################################################
-        #  Training
-        ############################################################
 
-        
-        # Validate arguments
         print("Loading Training Configuation...")
         self.update_training_status.emit("Dataset: "+self.dataset_path)
         self.update_training_status.emit("Logs: "+self.WORK_DIR+"/logs")
-        # Configurations
         if self.train_mode == "train":
             config = CustomConfig()
         config.display()
         
- 
         model = modellib.MaskRCNN(mode="training", config=config,
                                   model_dir=self.WORK_DIR+"/logs")
         print("Loading Inference Configuration...")
-        class InferenceConfig(CustomConfig):
-            # Number of GPUs to use for inference
-            GPU_COUNT = 1
-            # Number of images to process on each GPU
-            IMAGES_PER_GPU = 1
-            USE_MINI_MASK = False
-        # model_inference = modellib.MaskRCNN(mode="inference", config=InferenceConfig(),
-        #                          model_dir=self.WORK_DIR+"/logs")
         weights_path = COCO_WEIGHTS_PATH
-        # Download weights filet
         if not os.path.exists(weights_path):
             utils.download_trained_weights(weights_path)
-        # Load weights
         self.update_training_status.emit("Loading weights "+str(weights_path))
-        # Exclude the last layers because they require a matching
-        # number of classes
         model.load_weights(weights_path, by_name=True, exclude=[
             "mrcnn_class_logits", "mrcnn_bbox_fc",
             "mrcnn_bbox", "mrcnn_mask"])
