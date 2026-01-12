@@ -5,6 +5,9 @@ from os.path import dirname
 from datetime import datetime
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog
+from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
 
 import batchDetectThread
 import batch_cocoThread
@@ -16,6 +19,15 @@ import detectingThread
 import trainingThread
 import imgseq_thread
 from main_ui import Ui_MainWindow
+
+class MplCanvas(FigureCanvas):
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        self.fig = plt.figure(figsize=(width, height), dpi=dpi)
+        self.axes = self.fig.add_subplot(111)
+        self.axes.set_title("Training Loss")
+        self.axes.set_xlabel("Steps")
+        self.axes.set_ylabel("Loss")
+        super(MplCanvas, self).__init__(self.fig)
 
 # --- 1. Robust Stream Redirector (Fixes Ray fileno & Cleans Output) ---
 class StreamRedirector(QtCore.QObject):
@@ -78,6 +90,33 @@ class Cell(QMainWindow, Ui_MainWindow):
     def __init__(self, parent=None):
         super(Cell, self).__init__(parent)
         self.setupUi(self)
+        # --- ADD THIS: Setup Graph and Status Bar ---
+
+        # 1. Create Layout for Graph if you don't have a place for it
+        # Assuming you have a central widget or a layout to add to.
+        # If you defined a placeholder in Qt Designer, use it.
+        # Here I create a new Layout and add it to a specific area (e.g. textBrowser's parent)
+
+        # Example: finding a layout to add the graph (adjust 'verticalLayout' to your actual layout name)
+        # self.graph_layout = self.findChild(QVBoxLayout, 'verticalLayout') 
+
+        # Or creating a dedicated widget area:
+        self.canvas = MplCanvas(self, width=5, height=4, dpi=100)
+        self.loss_data = [] # Store loss history
+
+        # Add to your existing layout (replace 'self.verticalLayout' with your actual layout)
+        # If you don't know the layout, you can add it below your textBrowser usually
+        if hasattr(self, 'verticalLayout'): 
+            self.verticalLayout.addWidget(self.canvas)
+        else:
+            # Fallback: try to add to central widget layout
+            self.centralWidget().layout().addWidget(self.canvas)
+
+        # 2. Setup Status Bar Label
+        self.status_label = QLabel("Ready")
+        self.statusBar().addWidget(self.status_label) # Add to bottom status bar
+
+        # --- END ADDITION ---
 
         # --- 2. Setup Output Redirection ---
         self.stdout_original = sys.stdout
@@ -177,7 +216,18 @@ class Cell(QMainWindow, Ui_MainWindow):
             print("Json Profile saved!")
         except Exception as e:
             print(f"Error saving profile: {e}")
+    def update_status_bar(self, msg):
+        """Slot to update the status bar text"""
+        self.status_label.setText(msg)
 
+    def update_loss_graph(self, loss):
+        """Slot to update the loss graph"""
+        self.loss_data.append(loss)
+        self.canvas.axes.cla()  # Clear previous plot
+        self.canvas.axes.plot(self.loss_data, 'r-', label='Loss')
+        self.canvas.axes.set_title("Training Loss")
+        self.canvas.axes.legend()
+        self.canvas.draw()
     # --- Worker Thread Helpers ---
     def train_t(self):
         try:
@@ -200,6 +250,11 @@ class Cell(QMainWindow, Ui_MainWindow):
             self.thread.progressBar.connect(self.progressBar.setValue)
             self.thread.progressBar_setMaximum.connect(self.progressBar.setMaximum)
             
+            # --- CONNECT NEW SIGNALS ---
+            self.thread.update_status_bar.connect(self.update_status_bar)
+            self.thread.update_plot_data.connect(self.update_loss_graph)
+            # ---------------------------
+
             self.thread.moveToThread(self.myThread)
             self.myThread.started.connect(self.thread.run)
             self.myThread.start()

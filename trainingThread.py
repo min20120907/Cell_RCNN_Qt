@@ -33,25 +33,52 @@ if gpus:
 
 # --- Custom Callbacks for GUI ---
 
-class KerasQtProgressBar(tf.keras.callbacks.Callback):
+class LiveStatusCallback(tf.keras.callbacks.Callback):
+    """
+    Callback to emit live training status and loss data to the GUI
+    instead of printing to the console.
+    """
     def __init__(self, thread_instance):
         super().__init__()
         self.thread = thread_instance
+        self.start_time = 0
+        self.batch_count = 0
 
     def on_epoch_begin(self, epoch, logs=None):
-        if "steps" in self.params:
-            self.thread.progressBar_setMaximum.emit(self.params['steps'])
-        self.thread.progressBar.emit(0)
+        self.start_time = time.time()
+        self.batch_count = 0
 
     def on_batch_end(self, batch, logs=None):
-        self.thread.progressBar.emit(batch + 1)
-    
-    def on_epoch_end(self, epoch, logs=None):
-        # Print a clean summary line instead of the spammy progress bar
-        # Format: Epoch 1: loss: 0.5 - val_loss: 0.4
-        log_items = [f"{k}: {v:.4f}" for k, v in logs.items() if isinstance(v, (int, float))]
-        summary = f"Epoch {epoch + 1}: " + " - ".join(log_items)
-        print(summary) # This goes to the GUI text box via StreamRedirector
+        self.batch_count += 1
+        elapsed = time.time() - self.start_time
+        steps = self.params.get('steps', 0)
+        
+        # Calculate ETA
+        if self.batch_count > 0 and steps > 0:
+            time_per_batch = elapsed / self.batch_count
+            remaining = steps - self.batch_count
+            eta = int(remaining * time_per_batch)
+        else:
+            eta = 0
+            
+        # Format string like Keras: 
+        # ETA: 26s - batch: 474 - loss: 0.6944 ...
+        msg_parts = [f"ETA: {eta}s"]
+        msg_parts.append(f"batch: {batch + 1}/{steps}")
+        
+        # Add metrics
+        for k, v in logs.items():
+            if k in ['batch', 'size']: continue
+            msg_parts.append(f"{k}: {v:.4f}")
+            
+        final_msg = " - ".join(msg_parts)
+        
+        # Emit signal to update Status Bar text
+        self.thread.update_status_bar.emit(final_msg)
+        
+        # Emit signal to update Graph (send just the loss value)
+        if 'loss' in logs:
+            self.thread.update_plot_data.emit(float(logs['loss']))
 
 class MeanAveragePrecisionCallback(tf.keras.callbacks.Callback):
     def __init__(self, train_model, inference_model, dataset,
@@ -82,7 +109,6 @@ class MeanAveragePrecisionCallback(tf.keras.callbacks.Callback):
             logs["mean_average_precision"] = mAP
             self._verbose_print("mAP at epoch {0} is: {1:.4f}".format(epoch+1, mAP))
         
-        # Reset progress bar for next epoch
         if self.thread and "steps" in self.params:
              self.thread.progressBar_setMaximum.emit(self.params['steps'])
 
@@ -99,7 +125,6 @@ class MeanAveragePrecisionCallback(tf.keras.callbacks.Callback):
         np.random.shuffle(self.dataset_image_ids)
         target_ids = self.dataset_image_ids[:self.dataset_limit]
         
-        # Use GUI progress bar for mAP calculation
         if self.thread:
             self.thread.progressBar_setMaximum.emit(len(target_ids))
             self.thread.progressBar.emit(0)
@@ -155,6 +180,10 @@ class trainingThread(QtCore.QThread):
     update_training_status = QtCore.pyqtSignal(str)
     progressBar = QtCore.pyqtSignal(int)
     progressBar_setMaximum = QtCore.pyqtSignal(int)
+    
+    # NEW SIGNALS
+    update_status_bar = QtCore.pyqtSignal(str)
+    update_plot_data = QtCore.pyqtSignal(float)
 
     def __init__(self, parent=None, test=0, epoches=100,
      confidence=0.9, WORK_DIR = '', weight_path = '',dataset_path='',train_mode="train",steps=1):
@@ -172,7 +201,6 @@ class trainingThread(QtCore.QThread):
         from ray.util.joblib import register_ray
         register_ray()
         
-        # FIXED: Silence Ray Output
         ray.init(ignore_reinit_error=True, logging_level=logging.ERROR, log_to_driver=False) 
         
         physical_devices = tf.config.list_physical_devices('GPU')
@@ -194,47 +222,67 @@ class trainingThread(QtCore.QThread):
             IMAGE_RESIZE_MODE = "pad64"
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1 
-            NUM_CLASSES = 1 + 3
+            NUM_CLASSES = 1 + 2
             USE_MINI_MASK = False
             IMAGE_MAX_DIM = 4096
             IMAGE_MIN_DIM = 1024
         class CustomConfig(Config):
-            MAX_GT_INSTANCES = 10
-            IMAGE_RESIZE_MODE = "square"
             NAME = "cell"
-            IMAGES_PER_GPU = 12
-            USE_MINI_MASK = False
-            NUM_CLASSES = 1 + 3 
-            STEPS_PER_EPOCH = self.epoches
-            IMAGE_MAX_DIM = 256
-            IMAGE_MIN_DIM = 256
+    
+            # --- 1. 顯卡安全設定 ---
+            # 如果你有 24GB VRAM 可以試試 2，不然建議維持 1
+            IMAGES_PER_GPU = 1  
+    
+            # --- 2. 解析度與模型架構 ---
+            # 這是正確的決定！保持 1024 可以看清楚細胞
+            IMAGE_MIN_DIM = 1024  # 建議設 800，讓 resize 彈性一點，或維持 1024
+            IMAGE_MAX_DIM = 1024
+            IMAGE_RESIZE_MODE = "square" # 建議用 pad64，比 square 穩定，能保持長寬比
             BACKBONE = "resnet101"
-            VALIDATION_STEPS = 50
+    
+            # --- 3. 關鍵修正：Ground Truth 數量 ---
+            MAX_GT_INSTANCES = 50
+            DETECTION_MAX_INSTANCES = 50 # 檢測時也允許抓出這麼多
+    
+            # --- 4. 針對小細胞的優化 ---
+            # 你原本沒貼這行，但這對細胞極度重要！
+            # 如果不加這個，模型預設最小只抓 32px 的物體，會漏掉小細胞
+            RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128) 
+
+            # --- 5. 其他 ---
+            NUM_CLASSES = 1 + 2 
+            USE_MINI_MASK = False # 關閉是好的，雖然吃記憶體但分割邊緣會更準
+    
+            # 這行建議在主程式計算，不要寫死，或者設為一個固定值如 100
+            # STEPS_PER_EPOCH = 100 
+            VALIDATION_STEPS = 10
 
         def train(model):
+            # Define dataset loading (same as before)
+            def dataset_progress_callback(current, total):
+                self.progressBar_setMaximum.emit(total)
+                self.progressBar.emit(current)
+
             split= True
             if split:
                 dataset = CustomCroppingDataset()
-                dataset.load_custom(self.dataset_path, "train")
-                dataset.load_custom(self.dataset_path, "val")
-                dataset.load_custom(self.dataset_path, "test")
+                dataset.load_custom(self.dataset_path, "train", progress_callback=dataset_progress_callback)
+                # dataset.load_custom(self.dataset_path, "val", progress_callback=dataset_progress_callback)
+                # dataset.load_custom(self.dataset_path, "test", progress_callback=dataset_progress_callback)
                 dataset.prepare()
-                train_set, val_set, test_set = split_dataset(dataset, 0.7, 0.15, 0.15)
+                train_set, val_set, test_set = split_dataset(dataset, 0.07, 0.015, 0.015)
                 dataset_train = train_set
                 dataset_val = val_set
                 dataset_test = test_set
             else:
-                print("Loading training dataset")
                 dataset_train = CustomCroppingDataset()
-                dataset_train.load_custom(self.dataset_path,"train")
+                dataset_train.load_custom(self.dataset_path,"train", progress_callback=dataset_progress_callback)
                 dataset_train.prepare()
-                print("Loading validation dataset")
                 dataset_val = CustomCroppingDataset()
-                dataset_val.load_custom(self.dataset_path, "val")
+                dataset_val.load_custom(self.dataset_path, "val", progress_callback=dataset_progress_callback)
                 dataset_val.prepare()
-                print("Loading testing dataset")
                 dataset_test = CustomDataset()
-                dataset_test.load_custom(self.dataset_path, "test")
+                dataset_test.load_custom(self.dataset_path, "test", progress_callback=dataset_progress_callback)
                 dataset_test.prepare()
 
             aug = iaa.Sometimes(5/6, iaa.OneOf([
@@ -256,45 +304,22 @@ class trainingThread(QtCore.QThread):
             model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(),
                                      model_dir=self.WORK_DIR+"/logs")
             
-            # --- CALLBACKS ---
+            # Callbacks
             mean_average_precision_callback = MeanAveragePrecisionCallback(
                 model, model_inference, dataset_test, 
-                calculate_map_at_every_X_epoch=1, verbose=1, dataset_limit=100,
+                calculate_map_at_every_X_epoch=5, verbose=1, dataset_limit=100,
                 thread_instance=self
             )
-            # Link Keras progress to GUI
-            qt_progress_callback = KerasQtProgressBar(self)
-
-            self.update_training_status.emit("Training network heads")
+            # Use the new Live Status callback instead of the old Progress Bar
+            live_status_callback = LiveStatusCallback(self)
+	    
+            self.update_training_status.emit("Fine tune heads layers")
             
-            # FIXED: verbose=0 to silence spammy ASCII progress bars in console
             model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=47,
-                    layers='heads',
-                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
-                    augmentation = aug,
-                    verbose=0 
-                    )
-            self.update_training_status.emit("Fine tune Resnet stage 4 and up")
-            
-            # FIXED: verbose=0
-            model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=120,
-                    layers='4+',
-                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
-                    verbose=0
-                    )
-            self.update_training_status.emit("Fine tune all layers")
-            
-            # FIXED: verbose=0
-            model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE / 10,
                     epochs=300,
-                    layers='all',
-                    custom_callbacks=[mean_average_precision_callback, qt_progress_callback],
-                    augmentation = aug,
+                    layers='heads',
+                    custom_callbacks=[mean_average_precision_callback, live_status_callback],
+                    # augmentation = aug,
                     verbose=0
                     )
 
