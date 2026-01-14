@@ -304,6 +304,9 @@ class ProposalLayer(KL.Layer):
 
         # Apply deltas to anchors to get refined anchors.
         # [batch, N, (y1, x1, y2, x2)]
+        deltas = tf.cast(deltas, tf.float32)
+        pre_nms_anchors = tf.cast(pre_nms_anchors, tf.float32)
+        
         boxes = utils.batch_slice([pre_nms_anchors, deltas],
                                   lambda x, y: apply_box_deltas_graph(x, y),
                                   self.config.IMAGES_PER_GPU,
@@ -727,6 +730,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     deltas_specific = tf.gather_nd(deltas, indices)
     # Apply bounding box deltas
     # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
+    window = tf.cast(window, tf.float32)
     refined_rois = apply_box_deltas_graph(
         rois, deltas_specific * config.BBOX_STD_DEV)
     # Clip boxes to image window
@@ -1746,8 +1750,17 @@ class DataGenerator(KU.Sequence):
                     [self.batch_size, self.anchors.shape[0], 1], dtype=rpn_match.dtype)
                 batch_rpn_bbox = np.zeros(
                     [self.batch_size, self.config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4], dtype=rpn_bbox.dtype)
+                # ================= 修正開始 (Fix Start) =================
+                # 強制使用 Config 定義的尺寸 (1024x1024)，不再依賴 image.shape
+                # 這樣能確保容器永遠是正確的，不會被異常圖片撐大
+                if self.config.IMAGE_RESIZE_MODE == "crop":
+                    h, w = self.config.IMAGE_SHAPE[:2]
+                else:
+                    h, w = self.config.IMAGE_MAX_DIM, self.config.IMAGE_MAX_DIM
+                
                 batch_images = np.zeros(
-                    (self.batch_size,) + image.shape, dtype=np.float32)
+                    (self.batch_size, h, w, 3), dtype=np.float32)
+                # ================= 修正結束 (Fix End) =================
                 batch_gt_class_ids = np.zeros(
                     (self.batch_size, self.config.MAX_GT_INSTANCES), dtype=np.int32)
                 batch_gt_boxes = np.zeros(
@@ -1780,7 +1793,21 @@ class DataGenerator(KU.Sequence):
             batch_image_meta[b] = image_meta
             batch_rpn_match[b] = rpn_match[:, np.newaxis]
             batch_rpn_bbox[b] = rpn_bbox
-            batch_images[b] = mold_image(image.astype(np.float32), self.config)
+            # --- [安全網修正] ---
+            # 1. 先進行 mold (減去平均值)
+            molded_image = mold_image(image.astype(np.float32), self.config)
+            
+            # 2. 檢查尺寸是否正確
+            target_h, target_w = batch_images.shape[1], batch_images.shape[2]
+            
+            if molded_image.shape[:2] != (target_h, target_w):
+                # 如果尺寸不對 (例如 2368 vs 1024)，強制縮放！
+                import cv2
+                molded_image = cv2.resize(molded_image, (target_w, target_h))
+            
+            # 3. 塞入 Batch
+            batch_images[b] = molded_image
+            # -------------------
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
@@ -2320,7 +2347,7 @@ class MaskRCNN(object):
         callbacks = [
             tf.keras.callbacks.TensorBoard(log_dir=self.log_dir, histogram_freq=0, write_graph=True, write_images=True),
             tf.keras.callbacks.ModelCheckpoint(self.checkpoint_path, monitor='loss', save_best_only=True, verbose=1, save_weights_only=True),
-            tf.keras.callbacks.EarlyStopping(monitor='loss', patience=10, restore_best_weights=True, verbose=1),
+            # tf.keras.callbacks.EarlyStopping(monitor='loss', patience=10, restore_best_weights=True, verbose=1),
             tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.2, patience=5, verbose=1, min_lr=1e-6)
         ]
 
@@ -2338,17 +2365,17 @@ class MaskRCNN(object):
         val_steps = len(val_dataset._image_ids) // self.config.BATCH_SIZE
 
         # Adjust steps per epoch for gradient accumulation
-        steps_per_epoch = train_steps // gradient_accumulation_steps
+        # steps_per_epoch = train_steps // gradient_accumulation_steps
 
         # Fit the model using keras_model.fit
         self.keras_model.fit(
             train_generator,
             initial_epoch=self.epoch,
             epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
+            steps_per_epoch=1000,
             callbacks=callbacks,
             validation_data=val_generator,
-            validation_steps=val_steps,
+            validation_steps=10,
             max_queue_size=10,
             workers=1,
             use_multiprocessing=False,
