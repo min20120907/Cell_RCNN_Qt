@@ -279,8 +279,11 @@ class ProposalLayer(KL.Layer):
         config["proposal_count"] = self.proposal_count
         config["nms_threshold"] = self.nms_threshold
         return config
-
     def call(self, inputs):
+        # 🔥 [核彈級修正] 入口處直接全部轉成 float32
+        # 這確保了後面的 top_k, batch_slice, nms 全部都在 float32 下安全運行
+        inputs = [tf.cast(x, tf.float32) for x in inputs]
+
         # Box Scores. Use the foreground class confidence. [Batch, num_rois, 1]
         scores = inputs[0][:, :, 1]
         # Box deltas [batch, num_rois, 4]
@@ -290,10 +293,12 @@ class ProposalLayer(KL.Layer):
         anchors = inputs[2]
 
         # Improve performance by trimming to top anchors by score
-        # and doing the rest on the smaller subset.
         pre_nms_limit = tf.minimum(self.config.PRE_NMS_LIMIT, tf.shape(input=anchors)[1])
+        
+        # 現在 scores 是 float32，top_k 會非常精準
         ix = tf.nn.top_k(scores, pre_nms_limit, sorted=True,
                          name="top_anchors").indices
+                         
         scores = utils.batch_slice([scores, ix], lambda x, y: tf.gather(x, y),
                                    self.config.IMAGES_PER_GPU)
         deltas = utils.batch_slice([deltas, ix], lambda x, y: tf.gather(x, y),
@@ -303,26 +308,17 @@ class ProposalLayer(KL.Layer):
                                     names=["pre_nms_anchors"])
 
         # Apply deltas to anchors to get refined anchors.
-        # [batch, N, (y1, x1, y2, x2)]
-        deltas = tf.cast(deltas, tf.float32)
-        pre_nms_anchors = tf.cast(pre_nms_anchors, tf.float32)
-        
         boxes = utils.batch_slice([pre_nms_anchors, deltas],
                                   lambda x, y: apply_box_deltas_graph(x, y),
                                   self.config.IMAGES_PER_GPU,
                                   names=["refined_anchors"])
 
-        # Clip to image boundaries. Since we're in normalized coordinates,
-        # clip to 0..1 range. [batch, N, (y1, x1, y2, x2)]
+        # Clip to image boundaries. 
         window = np.array([0, 0, 1, 1], dtype=np.float32)
         boxes = utils.batch_slice(boxes,
                                   lambda x: clip_boxes_graph(x, window),
                                   self.config.IMAGES_PER_GPU,
                                   names=["refined_anchors_clipped"])
-
-        # Filter out small boxes
-        # According to Xinlei Chen's paper, this reduces detection accuracy
-        # for small objects, so we're skipping it.
 
         # Non-max suppression
         def nms(boxes, scores):
@@ -334,15 +330,14 @@ class ProposalLayer(KL.Layer):
             padding = tf.maximum(self.proposal_count - tf.shape(input=proposals)[0], 0)
             proposals = tf.pad(tensor=proposals, paddings=[(0, padding), (0, 0)])
             return proposals
+            
         proposals = utils.batch_slice([boxes, scores], nms,
                                       self.config.IMAGES_PER_GPU)
 
         if not context.executing_eagerly():
-            # Infer the static output shape:
             out_shape = self.compute_output_shape(None)
             proposals.set_shape(out_shape)
         return proposals
-
     def compute_output_shape(self, input_shape):
         return None, self.proposal_count, 4
 
@@ -384,39 +379,39 @@ class PyramidROIAlign(KL.Layer):
         config = super(PyramidROIAlign, self).get_config()
         config['pool_shape'] = self.pool_shape
         return config
-
     def call(self, inputs):
-        # Crop boxes [batch, num_boxes, (y1, x1, y2, x2)] in normalized coords
         boxes = inputs[0]
-
-        # Image meta
-        # Holds details about the image. See compose_image_meta()
         image_meta = inputs[1]
-
-        # Feature Maps. List of feature maps from different level of the
-        # feature pyramid. Each is [batch, height, width, channels]
         feature_maps = inputs[2:]
+
+        # 🔥 [FIX] 強制轉型為 float32，解決混合精度與 Type Error
+        boxes = tf.cast(boxes, tf.float32)
+        image_meta = tf.cast(image_meta, tf.float32)
 
         # Assign each ROI to a level in the pyramid based on the ROI area.
         y1, x1, y2, x2 = tf.split(boxes, 4, axis=2)
         h = y2 - y1
         w = x2 - x1
+        
         # Use shape of first image. Images in a batch must have the same size.
         image_shape = parse_image_meta_graph(image_meta)['image_shape'][0]
+        
         # Equation 1 in the Feature Pyramid Networks paper. Account for
         # the fact that our coordinates are normalized here.
         # e.g. a 224x224 ROI (in pixels) maps to P4
         image_area = tf.cast(image_shape[0] * image_shape[1], tf.float32)
         roi_level = log2_graph(tf.sqrt(h * w) / (224.0 / tf.sqrt(image_area)))
-        roi_level = tf.minimum(5, tf.maximum(
-            2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
+        roi_level = tf.minimum(5, tf.maximum(2, 4 + tf.cast(tf.round(roi_level), tf.int32)))
+        
+        # 🔥 [關鍵修正 FIX] Squeeze 掉最後一個維度 [Batch, Rois, 1] -> [Batch, Rois]
+        # 這樣 tf.where 才會回傳 2D index，gather_nd 才會回傳 [N, 4] 的正確形狀！
         roi_level = tf.squeeze(roi_level, 2)
 
         # Loop through levels and apply ROI pooling to each. P2 to P5.
         pooled = []
         box_to_level = []
         for i, level in enumerate(range(2, 6)):
-            ix = tf.compat.v1.where(tf.equal(roi_level, level))
+            ix = tf.where(tf.equal(roi_level, level))
             level_boxes = tf.gather_nd(boxes, ix)
 
             # Box indices for crop_and_resize.
@@ -430,16 +425,11 @@ class PyramidROIAlign(KL.Layer):
             box_indices = tf.stop_gradient(box_indices)
 
             # Crop and Resize
-            # From Mask R-CNN paper: "We sample four regular locations, so
-            # that we can evaluate either max or average pooling. In fact,
-            # interpolating only a single value at each bin center (without
-            # pooling) is nearly as effective."
-            #
-            # Here we use the simplified approach of a single value per bin,
-            # which is how it's done in tf.crop_and_resize()
-            # Result: [batch * num_boxes, pool_height, pool_width, channels]
+            # 🔥 [建議] 這裡把 feature map 也轉一下，保平安
+            fm = tf.cast(feature_maps[i], tf.float32)
+            
             pooled.append(tf.image.crop_and_resize(
-                feature_maps[i], level_boxes, box_indices, self.pool_shape,
+                fm, level_boxes, box_indices, self.pool_shape,
                 method="bilinear"))
 
         # Pack pooled features into one tensor
@@ -448,24 +438,22 @@ class PyramidROIAlign(KL.Layer):
         # Pack box_to_level mapping into one array and add another
         # column representing the order of pooled boxes
         box_to_level = tf.concat(box_to_level, axis=0)
-        box_range = tf.expand_dims(tf.range(tf.shape(input=box_to_level)[0]), 1)
-        box_to_level = tf.concat([tf.cast(box_to_level, tf.int32), box_range],
-                                 axis=1)
+        box_range = tf.expand_dims(tf.range(tf.shape(box_to_level)[0]), 1)
+        box_to_level = tf.concat([tf.cast(box_to_level, tf.int32), box_range], axis=1)
 
         # Rearrange pooled features to match the order of the original boxes
         # Sort box_to_level by batch then box index
-        # TF doesn't have a way to sort by two columns, so merge them and sort.
+        # TF does not have a way to sort by two columns, so merge them and sort.
         sorting_tensor = box_to_level[:, 0] * 100000 + box_to_level[:, 1]
         ix = tf.nn.top_k(sorting_tensor, k=tf.shape(
-            input=box_to_level)[0]).indices[::-1]
+            box_to_level)[0]).indices[::-1]
         ix = tf.gather(box_to_level[:, 2], ix)
         pooled = tf.gather(pooled, ix)
 
         # Re-add the batch dimension
-        shape = tf.concat([tf.shape(input=boxes)[:2], tf.shape(input=pooled)[1:]], axis=0)
+        shape = tf.concat([tf.shape(boxes)[:2], tf.shape(pooled)[1:]], axis=0)
         pooled = tf.reshape(pooled, shape)
         return pooled
-
     def compute_output_shape(self, input_shape):
         return input_shape[0][:2] + self.pool_shape + (input_shape[2][-1], )
 
@@ -705,34 +693,31 @@ class DetectionTargetLayer(KL.Layer):
 ############################################################
 #  Detection Layer
 ############################################################
-
 def refine_detections_graph(rois, probs, deltas, window, config):
     """Refine classified proposals and filter overlaps and return final
     detections.
-
-    Inputs:
-        rois: [N, (y1, x1, y2, x2)] in normalized coordinates
-        probs: [N, num_classes]. Class probabilities.
-        deltas: [N, num_classes, (dy, dx, log(dh), log(dw))]. Class-specific
-                bounding box deltas.
-        window: (y1, x1, y2, x2) in normalized coordinates. The part of the image
-            that contains the image excluding the padding.
-
-    Returns detections shaped: [num_detections, (y1, x1, y2, x2, class_id, score)] where
-        coordinates are normalized.
     """
     # Class IDs per ROI
     class_ids = tf.argmax(input=probs, axis=1, output_type=tf.int32)
     # Class probability of the top class of each ROI
     indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
+    
+    # 🔥 [FIX] 這裡直接把源頭轉成 float32，解決後面所有的 NMS 和 Concat 崩潰
     class_scores = tf.gather_nd(probs, indices)
+    class_scores = tf.cast(class_scores, tf.float32) 
+    
     # Class-specific bounding box deltas
     deltas_specific = tf.gather_nd(deltas, indices)
+    deltas_specific = tf.cast(deltas_specific, tf.float32) # Delta 也轉，保險
+    
     # Apply bounding box deltas
     # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
     window = tf.cast(window, tf.float32)
+    rois = tf.cast(rois, tf.float32)
+    
     refined_rois = apply_box_deltas_graph(
         rois, deltas_specific * config.BBOX_STD_DEV)
+    
     # Clip boxes to image window
     refined_rois = clip_boxes_graph(refined_rois, window)
 
@@ -740,6 +725,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
 
     # Filter out background boxes
     keep = tf.compat.v1.where(class_ids > 0)[:, 0]
+    
     # Filter out low confidence boxes
     if config.DETECTION_MIN_CONFIDENCE:
         conf_keep = tf.compat.v1.where(class_scores >= config.DETECTION_MIN_CONFIDENCE)[:, 0]
@@ -758,6 +744,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
         """Apply Non-Maximum Suppression on ROIs of the given class."""
         # Indices of ROIs of the given class
         ixs = tf.compat.v1.where(tf.equal(pre_nms_class_ids, class_id))[:, 0]
+        
         # Apply NMS
         class_keep = tf.image.non_max_suppression(
                 tf.gather(pre_nms_rois, ixs),
@@ -793,6 +780,7 @@ def refine_detections_graph(rois, probs, deltas, window, config):
 
     # Arrange output as [N, (y1, x1, y2, x2, class_id, score)]
     # Coordinates are normalized.
+    # 🔥 這裡之前報錯，現在 class_scores 已經是 float32，這裡會安全通過
     detections = tf.concat([
         tf.gather(refined_rois, keep),
         tf.dtypes.cast(tf.gather(class_ids, keep), tf.float32)[..., tf.newaxis],
@@ -803,7 +791,6 @@ def refine_detections_graph(rois, probs, deltas, window, config):
     gap = config.DETECTION_MAX_INSTANCES - tf.shape(input=detections)[0]
     detections = tf.pad(tensor=detections, paddings=[(0, gap), (0, 0)], mode="CONSTANT")
     return detections
-
 
 class DetectionLayer(KL.Layer):
     """Takes classified proposal boxes and their bounding box deltas and
@@ -822,34 +809,29 @@ class DetectionLayer(KL.Layer):
         config = super(DetectionLayer, self).get_config()
         config["config"] = self.config.to_dict()
         return config
-
     def call(self, inputs):
+        # 🔥 [核彈級修正] 入口處直接全部轉成 float32
+        inputs = [tf.cast(x, tf.float32) for x in inputs]
+        
         rois = inputs[0]
         mrcnn_class = inputs[1]
         mrcnn_bbox = inputs[2]
         image_meta = inputs[3]
 
-        # Get windows of images in normalized coordinates. Windows are the area
-        # in the image that excludes the padding.
-        # Use the shape of the first image in the batch to normalize the window
-        # because we know that all images get resized to the same size.
         m = parse_image_meta_graph(image_meta)
         image_shape = m['image_shape'][0]
         window = norm_boxes_graph(m['window'], image_shape[:2])
 
-        # Run detection refinement graph on each item in the batch
+        # Run refinement graph on each item in the batch
         detections_batch = utils.batch_slice(
             [rois, mrcnn_class, mrcnn_bbox, window],
             lambda x, y, w, z: refine_detections_graph(x, y, w, z, self.config),
             self.config.IMAGES_PER_GPU)
 
         # Reshape output
-        # [batch, num_detections, (y1, x1, y2, x2, class_id, class_score)] in
-        # normalized coordinates
         return tf.reshape(
             detections_batch,
             [self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES, 6])
-
     def compute_output_shape(self, input_shape):
         return (None, self.config.DETECTION_MAX_INSTANCES, 6)
 
@@ -2346,9 +2328,9 @@ class MaskRCNN(object):
         # Define callbacks
         callbacks = [
             tf.keras.callbacks.TensorBoard(log_dir=self.log_dir, histogram_freq=0, write_graph=True, write_images=True),
-            tf.keras.callbacks.ModelCheckpoint(self.checkpoint_path, monitor='loss', save_best_only=True, verbose=1, save_weights_only=True),
-            # tf.keras.callbacks.EarlyStopping(monitor='loss', patience=10, restore_best_weights=True, verbose=1),
-            tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.2, patience=5, verbose=1, min_lr=1e-6)
+            tf.keras.callbacks.ModelCheckpoint(self.checkpoint_path, monitor='val_loss', save_best_only=True, verbose=1, save_weights_only=True),
+            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+            tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.8, patience=5, verbose=1, min_lr=1e-6)
         ]
 
 
@@ -2365,7 +2347,7 @@ class MaskRCNN(object):
         val_steps = len(val_dataset._image_ids) // self.config.BATCH_SIZE
 
         # Adjust steps per epoch for gradient accumulation
-        # steps_per_epoch = train_steps // gradient_accumulation_steps
+        steps_per_epoch = train_steps // gradient_accumulation_steps
 
         # Fit the model using keras_model.fit
         self.keras_model.fit(
@@ -2375,7 +2357,7 @@ class MaskRCNN(object):
             steps_per_epoch=1000,
             callbacks=callbacks,
             validation_data=val_generator,
-            validation_steps=10,
+            validation_steps=50,
             max_queue_size=10,
             workers=1,
             use_multiprocessing=False,
@@ -2843,7 +2825,6 @@ def batch_pack_graph(x, counts, num_rows):
         outputs.append(x[i, :counts[i]])
     return tf.concat(outputs, axis=0)
 
-
 def norm_boxes_graph(boxes, shape):
     """Converts boxes from pixel coordinates to normalized coordinates.
     boxes: [..., (y1, x1, y2, x2)] in pixel coordinates
@@ -2855,24 +2836,28 @@ def norm_boxes_graph(boxes, shape):
     Returns:
         [..., (y1, x1, y2, x2)] in normalized coordinates
     """
-    h, w = tf.split(tf.cast(shape, tf.float32), 2)
+    # 🔥 [FIX] 強制轉型為 float32，解決混合精度相減崩潰
+    boxes = tf.cast(boxes, tf.float32)
+    shape = tf.cast(shape, tf.float32)
+
+    h, w = tf.split(shape, 2)
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
     shift = tf.constant([0., 0., 1., 1.])
     return tf.divide(boxes - shift, scale)
-
 
 def denorm_boxes_graph(boxes, shape):
     """Converts boxes from normalized coordinates to pixel coordinates.
     boxes: [..., (y1, x1, y2, x2)] in normalized coordinates
     shape: [..., (height, width)] in pixels
 
-    Note: In pixel coordinates (y2, x2) is outside the box. But in normalized
-    coordinates it's inside the box.
-
     Returns:
         [..., (y1, x1, y2, x2)] in pixel coordinates
     """
-    h, w = tf.split(tf.cast(shape, tf.float32), 2)
+    # 🔥 [FIX] 強制轉型為 float32，解決混合精度相乘崩潰
+    boxes = tf.cast(boxes, tf.float32)
+    shape = tf.cast(shape, tf.float32)
+
+    h, w = tf.split(shape, 2)
     scale = tf.concat([h, w, h, w], axis=-1) - tf.constant(1.0)
     shift = tf.constant([0., 0., 1., 1.])
     return tf.cast(tf.round(tf.multiply(boxes, scale) + shift), tf.int32)
