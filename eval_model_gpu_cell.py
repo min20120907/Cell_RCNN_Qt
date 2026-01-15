@@ -3,453 +3,560 @@ import os
 import time
 import json
 import numpy as np
-import matplotlib
-# Use 'Agg' backend to prevent Matplotlib/Qt conflicts
-matplotlib.use('Agg') 
-import matplotlib.pyplot as plt
-import tensorflow as tf
 import cv2
+import traceback
+import matplotlib
+matplotlib.use('Qt5Agg')  # 指定 Qt5 後端
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import seaborn as sns 
+
+import tensorflow as tf
 from skimage import measure
 
-# Redirect standard output/error to capture logs
-from io import StringIO
-
+# --- MRCNN Imports ---
 import mrcnn.model as modellib
-from mrcnn.utils import compute_ap
+from mrcnn.utils import compute_ap, compute_matches
 from mrcnn.config import Config
 
-# Import your datasets
+# --- Custom Dataset ---
+# 🔥 確保你的資料夾內有修正後的 CustomCroppingDataset.py (含 np.round)
 from CustomCroppingDataset import CustomCroppingDataset
 from CustomDataset import CustomDataset
 
+# --- PyQt5 Imports ---
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton,
                              QFileDialog, QLabel, QLineEdit, QCheckBox, 
-                             QTextEdit, QHBoxLayout, QProgressBar, QMessageBox, QStatusBar)
+                             QTextEdit, QHBoxLayout, QProgressBar, QMessageBox,
+                             QTabWidget, QGridLayout, QScrollArea, QFrame, QSplitter)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt5.QtGui import QImage, QPixmap
 
-# --- FIX START: Enhanced Stream Redirector ---
-class StreamRedirector(QObject):
-    """Redirects stdout/stderr to a Qt signal, while keeping file attributes for libraries like Ray."""
-    text_written = pyqtSignal(str)
+# 防止 GPU OOM
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
 
-    def __init__(self, original_stream=None):
-        super().__init__()
-        self.original_stream = original_stream
-
-    def write(self, text):
-        self.text_written.emit(str(text))
-        # Optional: Uncomment if you still want logs in the real console/terminal
-        # if self.original_stream:
-        #     self.original_stream.write(text)
-        #     self.original_stream.flush()
-
-    def flush(self):
-        if self.original_stream:
-            self.original_stream.flush()
-
-    def fileno(self):
-        """Required by Ray/subprocess to access the file descriptor."""
-        if self.original_stream:
-            try:
-                return self.original_stream.fileno()
-            except (AttributeError, ValueError):
-                pass
-        return 1  # Default to stdout fd if unknown
-
-    def isatty(self):
-        """Required by some logging libraries."""
-        if self.original_stream:
-            try:
-                return self.original_stream.isatty()
-            except AttributeError:
-                pass
-        return False
-# --- FIX END ---
-
-# --- Configuration ---
+# =================================================================================
+# Config (完全同步 Training Release 1.0)
+# =================================================================================
 class InferenceConfig(Config):
     NAME = "cell"
     GPU_COUNT = 1
     IMAGES_PER_GPU = 1
-    
-    # Match Training Config (Critical for good results)
-    IMAGE_MIN_DIM = 1024 
-    IMAGE_MAX_DIM = 1024 
-    IMAGE_RESIZE_MODE = "pad64" 
-    
-    RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)
+    NUM_CLASSES = 1 + 2
     BACKBONE = "resnet101"
-    NUM_CLASSES = 1 + 2  # Background + Cell + Chromosome
+    
+    # 🔥 [關鍵] 網子夠大
+    RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
+    
+    BACKBONE_STRIDES = [4, 8, 16, 32, 64]
+    RPN_ANCHOR_RATIOS = [0.75, 1, 1.33, 1.6]
+    
+    # 🔥 [關鍵] 使用 COCO 標準 (配合 Training)
+    MEAN_PIXEL = np.array([123.7, 116.8, 103.9])
+    
+    # 🔥 [關鍵] 關閉 Mini Mask (銳利邊緣)
     USE_MINI_MASK = False
     
-    DETECTION_MIN_CONFIDENCE = 0.7 
+    DETECTION_MIN_CONFIDENCE = 0.5
+    DETECTION_MAX_INSTANCES = 100
     DETECTION_NMS_THRESHOLD = 0.3
-    RPN_NMS_THRESHOLD = 0.7
-    DETECTION_MAX_INSTANCES = 50
+    
+    # 🔥 [關鍵] 鎖定 512
+    IMAGE_MIN_DIM = 512
+    IMAGE_MAX_DIM = 512
+    IMAGE_RESIZE_MODE = "pad64"
 
-# --- Helper Function ---
-def unmold_mask(mask, bbox, image_shape):
-    y1, x1, y2, x2 = bbox
-    mask = cv2.resize(mask.astype(np.float32), (x2 - x1, y2 - y1))
-    mask = np.where(mask >= 0.5, 1, 0).astype(np.bool_)
-    full_mask = np.zeros(image_shape[:2], dtype=np.bool_)
-    full_mask[y1:y2, x1:x2] = mask
-    return full_mask
+# =================================================================================
+# 核心邏輯：指標與繪圖
+# =================================================================================
 
-# --- Worker Thread for Evaluation ---
+def compute_metrics_at_threshold(gt_boxes, gt_class_ids, gt_masks,
+                                 pred_boxes, pred_class_ids, pred_scores, pred_masks,
+                                 iou_threshold=0.5, ignore_fp=False):
+    """
+    計算單一 IoU 門檻下的 AP, Precision, Recall
+    """
+    gt_match, pred_match, overlaps = compute_matches(
+        gt_boxes, gt_class_ids, gt_masks,
+        pred_boxes, pred_class_ids, pred_scores, pred_masks,
+        iou_threshold=iou_threshold)
+
+    # Compute AP
+    ap, precisions, recalls, _ = compute_ap(
+        gt_boxes, gt_class_ids, gt_masks,
+        pred_boxes, pred_class_ids, pred_scores, pred_masks,
+        iou_threshold=iou_threshold)
+
+    tp = np.sum(pred_match > -1)
+    fp = np.sum(pred_match == -1)
+    fn = np.sum(gt_match == -1)
+
+    if ignore_fp:
+        fp = 0 
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    
+    return ap, precision, recall, gt_match, pred_match, overlaps
+
+def draw_color_coded_result(image, gt_mask, pred_mask, pred_class_ids, pred_match):
+    """
+    繪製：🟨TP 🟥FP(Cell) 🟦FP(Chromo) 🟩GT
+    """
+    canvas = image.copy()
+    
+    # GT (Green Outline)
+    if gt_mask.shape[-1] > 0:
+        for i in range(gt_mask.shape[-1]):
+            contours = measure.find_contours(gt_mask[..., i], 0.5)
+            for contour in contours:
+                rr, cc = contour[:, 0].astype(int), contour[:, 1].astype(int)
+                rr = np.clip(rr, 0, canvas.shape[0]-1)
+                cc = np.clip(cc, 0, canvas.shape[1]-1)
+                canvas[rr, cc] = [0, 255, 0] 
+
+    # Predictions
+    if pred_mask.shape[-1] > 0:
+        for i in range(pred_mask.shape[-1]):
+            class_id = pred_class_ids[i]
+            is_tp = pred_match[i] > -1
+            
+            if is_tp:
+                color = [255, 255, 0] # Yellow
+            else:
+                color = [255, 0, 0] if class_id == 1 else [0, 0, 255] # Red / Blue
+            
+            mask = pred_mask[..., i]
+            contours = measure.find_contours(mask, 0.5)
+            for contour in contours:
+                rr, cc = contour[:, 0].astype(int), contour[:, 1].astype(int)
+                rr = np.clip(rr, 0, canvas.shape[0]-1)
+                cc = np.clip(cc, 0, canvas.shape[1]-1)
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                         r_off = np.clip(rr + dx, 0, canvas.shape[0]-1)
+                         c_off = np.clip(cc + dy, 0, canvas.shape[1]-1)
+                         canvas[r_off, c_off] = color
+    return canvas
+
+# =================================================================================
+# Worker Thread
+# =================================================================================
 class EvaluationThread(QThread):
-    progress_signal = pyqtSignal(int, int) # Current, Total
-    status_signal = pyqtSignal(str)        # For Status Bar (ETA, mAP)
-    finished_signal = pyqtSignal(str)      # Final Report
-    error_signal = pyqtSignal(str)         # Critical Errors
+    progress_signal = pyqtSignal(int, int)
+    status_signal = pyqtSignal(str)
+    result_image_signal = pyqtSignal(np.ndarray, str) 
+    finished_signal = pyqtSignal(dict) 
+    error_signal = pyqtSignal(str)
 
-    def __init__(self, dataset_path, weights_path, output_folder, limit, use_cpu):
+    def __init__(self, dataset_path, weights_path, output_folder, limit, use_cpu, ignore_fp):
         super().__init__()
         self.dataset_path = dataset_path
         self.weights_path = weights_path
         self.output_folder = output_folder
         self.limit = limit
         self.use_cpu = use_cpu
+        self.ignore_fp = ignore_fp
 
     def run(self):
         try:
-            # Ensure Ray is initialized safely
             import ray
             if not ray.is_initialized():
                 ray.init(ignore_reinit_error=True, log_to_driver=False)
 
-            # 1. Setup Environment
             if self.use_cpu:
                 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-                print("⚙️ Mode: CPU")
-            else:
-                print("⚙️ Mode: GPU")
 
-            # 2. Load Configuration
             config = InferenceConfig()
-            
-            # 3. Load Dataset with Progress Bar Connection
-            print(f"📂 Loading dataset from: {self.dataset_path}")
-            dataset = CustomDataset()
-            
-            # --- CALLBACK FUNCTION FOR LOADING ---
-            def loading_callback(current, total):
-                # Emit signal to update GUI Progress Bar
-                self.progress_signal.emit(current, total)
-                # Emit signal to update Status Text
-                self.status_signal.emit(f"Loading Data: {current}/{total}")
-            # -------------------------------------
-
-            # Pass the callback to load_custom
-            dataset.load_custom(self.dataset_path, "train", progress_callback=loading_callback) 
-            
-            dataset.prepare()
-            print(f"✅ Dataset loaded. Total images: {len(dataset.image_ids)}")
-
-            # 4. Load Model
-            print(f"⚖️ Loading weights: {os.path.basename(self.weights_path)}")
             model = modellib.MaskRCNN(mode="inference", config=config, model_dir=os.path.dirname(self.weights_path))
             model.load_weights(self.weights_path, by_name=True)
 
-            # 5. Determine limit
-            total_images = len(dataset.image_ids)
-            target_limit = total_images if (self.limit == -1 or self.limit > total_images) else self.limit
+            dataset = CustomDataset()
+            subset = "test" if os.path.exists(os.path.join(self.dataset_path, "test")) else "train"
+            dataset.load_custom(self.dataset_path, subset)
+            dataset.prepare()
 
-            precisions = []
-            class_precisions = {1: [], 2: []}
+            limit = len(dataset.image_ids) if self.limit == -1 else min(self.limit, len(dataset.image_ids))
             
-            print(f"🚀 Starting evaluation on {target_limit} images...")
+            # --- Metrics Containers ---
+            precisions_05 = []
+            recalls_05 = []
+            ious_list = []
+            cm_data = [] 
             
+            # Multi-threshold Metrics (for mAP vs IoU Graph)
+            iou_thresholds = np.arange(0.5, 1.0, 0.05)
+            map_curve_data = {th: [] for th in iou_thresholds} 
+
             start_time = time.time()
 
-            # 6. Main Evaluation Loop
-            for i in range(target_limit):
+            for i in range(limit):
                 image_id = dataset.image_ids[i]
                 
-                # Load image and GT
-                try:
-                    image, _, gt_class_id, gt_bbox, gt_mask = modellib.load_image_gt(dataset, config, image_id)
-                except Exception as e:
-                    print(f"⚠️ Error loading image {image_id}: {e}")
-                    continue
-
-                if gt_mask.size == 0:
-                    continue
-
-                # Run Inference
-                molded_image = np.expand_dims(modellib.mold_image(image.astype(np.float32), config), 0)
-                results = model.detect(molded_image, verbose=0)
+                # Load GT & Infer
+                image, _, gt_class_id, gt_bbox, gt_mask = modellib.load_image_gt(dataset, config, image_id)
+                results = model.detect([image], verbose=0)
                 r = results[0]
 
-                # Resize masks
-                masks_resized = [unmold_mask(r["masks"][:, :, j], r["rois"][j], image.shape) for j in range(r["masks"].shape[-1])]
-                r["masks"] = np.stack(masks_resized, axis=-1) if masks_resized else np.zeros(image.shape[:2] + (0,))
+                # --- A. Main Calculation (IoU=0.5) ---
+                ap_05, p_05, rec_05, gt_match, pred_match, overlaps = compute_metrics_at_threshold(
+                    gt_bbox, gt_class_id, gt_mask,
+                    r['rois'], r['class_ids'], r['scores'], r['masks'],
+                    iou_threshold=0.5, ignore_fp=self.ignore_fp
+                )
+                
+                precisions_05.append(p_05)
+                recalls_05.append(rec_05)
+                if overlaps.size > 0: ious_list.extend(np.max(overlaps, axis=1))
 
-                # Compute AP
-                AP, P, _, _ = compute_ap(gt_bbox, gt_class_id, gt_mask, r["rois"], r["class_ids"], r["scores"], r["masks"], iou_threshold=0.5)
-                precisions.append(AP)
+                # CM Data (修正變數名稱 gt_class_id)
+                for idx, pred_idx in enumerate(np.where(pred_match > -1)[0]):
+                    gt_idx = int(pred_match[pred_idx])
+                    cm_data.append((gt_class_id[gt_idx], r['class_ids'][pred_idx]))
+                
+                for idx in np.where(gt_match == -1)[0]:
+                    cm_data.append((gt_class_id[idx], 0))
+                
+                if not self.ignore_fp:
+                    for idx in np.where(pred_match == -1)[0]:
+                        cm_data.append((0, r['class_ids'][idx]))
 
-                for k, class_id in enumerate(r["class_ids"]):
-                    class_precisions.setdefault(class_id, []).append(P[k])
+                # --- B. Multi-threshold Calculation (Loop 0.5 -> 0.95) ---
+                for th in iou_thresholds:
+                    ap, _, _, _ = compute_ap(
+                        gt_bbox, gt_class_id, gt_mask,
+                        r['rois'], r['class_ids'], r['scores'], r['masks'],
+                        iou_threshold=th
+                    )
+                    map_curve_data[th].append(ap)
 
-                # Stats
-                current_mean_ap = np.mean(precisions)
+                # Draw Result
+                vis_img = draw_color_coded_result(image, gt_mask, r['masks'], r['class_ids'], pred_match)
+                
+                # Save to disk if output_folder is set
+                if self.output_folder:
+                    save_path = os.path.join(self.output_folder, f"eval_{i:03d}.png")
+                    try:
+                        # Convert RGB to BGR for OpenCV saving
+                        cv2.imwrite(save_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+                    except Exception as ex:
+                        print(f"Error saving image: {ex}")
+
+                # Emit to GUI
+                self.result_image_signal.emit(vis_img, f"Img {i}")
+                
                 elapsed = time.time() - start_time
-                avg_time_per_img = elapsed / (i + 1)
-                remaining_imgs = target_limit - (i + 1)
-                eta_seconds = int(remaining_imgs * avg_time_per_img)
-                eta_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
-                
-                status_msg = f"ETA: {eta_str} | mAP: {current_mean_ap:.4f} | Current AP: {AP:.4f}"
-                
-                self.status_signal.emit(status_msg)
-                self.progress_signal.emit(i + 1, target_limit)
+                fps = (i+1) / elapsed
+                self.status_signal.emit(f"Processing {i+1}/{limit} | FPS: {fps:.1f} | Recall(0.5): {rec_05:.2f}")
+                self.progress_signal.emit(i+1, limit)
 
-                # Save Plot
-                self.save_visualization(image, gt_mask, r['masks'], i)
+            map_curve_y = [np.mean(map_curve_data[th]) for th in iou_thresholds]
 
-            # 7. Final Report
-            final_mean_ap = np.mean(precisions) if precisions else 0
-            report = [
-                f"\n🏁 Evaluation Complete!",
-                f"📊 Final Mean AP: {final_mean_ap:.4f}"
-            ]
-            for cid, p in class_precisions.items():
-                if p:
-                    report.append(f"   - Class {cid} AP: {np.mean(p):.4f}")
-            
-            final_msg = "\n".join(report)
-            print(final_msg)
-            self.finished_signal.emit(final_msg)
+            stats = {
+                "precisions": precisions_05,
+                "recalls": recalls_05,
+                "ious": ious_list,
+                "cm_data": cm_data,
+                "mAP_05": np.mean(precisions_05),
+                "curve_x": iou_thresholds,
+                "curve_y": map_curve_y
+            }
+            self.finished_signal.emit(stats)
 
         except Exception as e:
-            self.error_signal.emit(str(e))
-            import traceback
-            traceback.print_exc()
+            self.error_signal.emit(str(e) + "\n" + traceback.format_exc())
+# =================================================================================
+# GUI Tabs
+# =================================================================================
+class MplCanvas(FigureCanvas):
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super(MplCanvas, self).__init__(fig)
 
-    def save_visualization(self, image, gt_mask, pred_mask, index):
-        # ... (same as before) ...
-        fig = plt.figure(figsize=(6, 6))
-        ax = fig.add_subplot(111)
-        ax.imshow(image)
-        for j in range(gt_mask.shape[-1]):
-            for contour in measure.find_contours(gt_mask[..., j], 0.5):
-                ax.plot(contour[:, 1], contour[:, 0], '-g', linewidth=1)
-        for j in range(pred_mask.shape[-1]):
-            for contour in measure.find_contours(pred_mask[..., j], 0.5):
-                ax.plot(contour[:, 1], contour[:, 0], '-r', linewidth=1)
-        ax.axis('off')
-        save_path = os.path.join(self.output_folder, f'image_{index:03d}.png')
-        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
-        plt.close(fig)
-# --- Main GUI Class ---
 class EvaluationApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mask R-CNN Evaluation GUI")
-        self.resize(750, 650)
-        self.thread = None
-
-        # --- FIX: Pass original streams to redirector ---
-        # We need to save the original stdout/stderr first
-        self.original_stdout = sys.__stdout__
-        self.original_stderr = sys.__stderr__
-
-        self.stdout_redirector = StreamRedirector(self.original_stdout)
-        self.stderr_redirector = StreamRedirector(self.original_stderr)
+        self.setWindowTitle("Cell R-CNN Evaluation Dashboard (Ultimate V3)")
+        self.resize(1300, 900)
         
-        self.stdout_redirector.text_written.connect(self.append_log)
-        self.stderr_redirector.text_written.connect(self.append_log)
+        main_layout = QVBoxLayout()
+        self.tabs = QTabWidget()
         
-        sys.stdout = self.stdout_redirector
-        sys.stderr = self.stderr_redirector
-
-        # UI Components
-        self.dataset_input = QLineEdit()
-        self.weights_input = QLineEdit()
-        self.output_input = QLineEdit()
-        self.limit_field = QLineEdit("100")
-        self.cpu_checkbox = QCheckBox("Use CPU")
+        self.tab_control = QWidget()
+        self.init_control_tab()
         
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setStyleSheet("background-color: #1e1e1e; color: #00ff00; font-family: Consolas;")
+        self.tab_gallery = QWidget()
+        self.init_gallery_tab()
 
-        self.dataset_btn = QPushButton("Browse")
-        self.weights_btn = QPushButton("Browse")
-        self.output_btn = QPushButton("Browse")
-        self.eval_btn = QPushButton("Run Evaluation")
-        self.eval_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
-        self.save_btn = QPushButton("Save Profile")
-        self.load_btn = QPushButton("Load Profile")
+        self.tab_analytics = QWidget()
+        self.init_analytics_tab()
 
-        # --- Status Bar Components ---
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setStyleSheet("QProgressBar { text-align: center; }")
+        self.tabs.addTab(self.tab_control, "🎛️ Control")
+        self.tabs.addTab(self.tab_gallery, "🖼️ Visual Results")
+        self.tabs.addTab(self.tab_analytics, "📊 Analytics")
         
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("font-weight: bold; padding-left: 5px;")
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
+        self.auto_load_default()
 
-        # Layout Setup
+    def init_control_tab(self):
         layout = QVBoxLayout()
         
-        # Input Rows
-        for lbl, line, btn in [("Dataset:", self.dataset_input, self.dataset_btn),
-                               ("Weights:", self.weights_input, self.weights_btn),
-                               ("Output:", self.output_input, self.output_btn)]:
-            row = QHBoxLayout()
-            label = QLabel(lbl)
-            label.setFixedWidth(60)
-            row.addWidget(label)
-            row.addWidget(line)
-            row.addWidget(btn)
-            layout.addLayout(row)
-
+        # Profile
+        profile_layout = QHBoxLayout()
+        self.save_btn = QPushButton("💾 Save Profile As...")
+        self.load_btn = QPushButton("📂 Load Profile...")
+        profile_layout.addWidget(self.save_btn)
+        profile_layout.addWidget(self.load_btn)
+        layout.addLayout(profile_layout)
+        
+        # Inputs
+        self.dataset_input = QLineEdit()
+        self.weights_input = QLineEdit()
+        self.output_input = QLineEdit() # Output Path
+        
+        self.dataset_btn = QPushButton("Browse Dataset")
+        self.weights_btn = QPushButton("Browse Weights")
+        self.output_btn = QPushButton("Browse Output")
+        
         # Settings
-        settings_row = QHBoxLayout()
-        settings_row.addWidget(QLabel("Limit:"))
-        self.limit_field.setFixedWidth(80)
-        settings_row.addWidget(self.limit_field)
-        settings_row.addWidget(self.cpu_checkbox)
-        settings_row.addStretch()
-        layout.addLayout(settings_row)
-
-        layout.addWidget(self.eval_btn)
+        self.limit_input = QLineEdit("50")
+        self.cpu_chk = QCheckBox("Force CPU")
+        self.ignore_fp_chk = QCheckBox("⚠️ Ignore False Positives (Incomplete GT Mode)")
+        self.ignore_fp_chk.setChecked(True) 
+        self.ignore_fp_chk.setStyleSheet("color: red; font-weight: bold;")
         
-        # Log Section
-        layout.addWidget(QLabel("Console Output:"))
-        layout.addWidget(self.result_text)
+        self.run_btn = QPushButton("🚀 Start Evaluation")
+        self.run_btn.setStyleSheet("background-color: #4CAF50; color: white; font-size: 16px; padding: 10px; font-weight: bold;")
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("background-color: #1e1e1e; color: #00ff00; font-family: Consolas;")
+        self.progress = QProgressBar()
         
-        # Profile Buttons
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self.save_btn)
-        btn_row.addWidget(self.load_btn)
-        layout.addLayout(btn_row)
-
-        # --- Status Bar Area (Bottom) ---
-        status_layout = QHBoxLayout()
-        status_layout.addWidget(self.status_label, 1) # Label takes available space
-        status_layout.addWidget(self.progress_bar, 2) # Bar takes twice the space
-        layout.addLayout(status_layout)
-
-        self.setLayout(layout)
-
+        # Rows
+        h1 = QHBoxLayout()
+        h1.addWidget(QLabel("Dataset Path:")); h1.addWidget(self.dataset_input); h1.addWidget(self.dataset_btn)
+        
+        h2 = QHBoxLayout()
+        h2.addWidget(QLabel("Weights File:")); h2.addWidget(self.weights_input); h2.addWidget(self.weights_btn)
+        
+        h_out = QHBoxLayout() # Output Row
+        h_out.addWidget(QLabel("Output Folder:")); h_out.addWidget(self.output_input); h_out.addWidget(self.output_btn)
+        
+        h3 = QHBoxLayout()
+        h3.addWidget(QLabel("Image Limit:")); h3.addWidget(self.limit_input)
+        h3.addWidget(self.cpu_chk); h3.addWidget(self.ignore_fp_chk)
+        
+        layout.addLayout(h1); layout.addLayout(h2); layout.addLayout(h_out); layout.addLayout(h3)
+        layout.addWidget(self.run_btn)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.log_text)
+        self.tab_control.setLayout(layout)
+        
         # Connections
         self.dataset_btn.clicked.connect(lambda: self._browse(self.dataset_input, True))
-        self.weights_btn.clicked.connect(lambda: self._browse(self.weights_input, False, "Weights (*.h5)"))
+        self.weights_btn.clicked.connect(lambda: self._browse(self.weights_input, False))
         self.output_btn.clicked.connect(lambda: self._browse(self.output_input, True))
-        self.eval_btn.clicked.connect(self.start_evaluation)
-        self.save_btn.clicked.connect(self.save_profile)
-        self.load_btn.clicked.connect(self.load_profile)
+        
+        self.run_btn.clicked.connect(self.start_eval)
+        self.save_btn.clicked.connect(self.save_profile_dialog)
+        self.load_btn.clicked.connect(self.load_profile_dialog)
 
-    def _browse(self, lineedit, is_folder, file_filter=None):
-        if is_folder:
-            path = QFileDialog.getExistingDirectory(self, "Select Directory")
-        else:
-            path, _ = QFileDialog.getOpenFileName(self, "Select File", filter=file_filter)
-        if path:
-            lineedit.setText(path)
+    def init_gallery_tab(self):
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.gallery_content = QWidget()
+        self.gallery_grid = QGridLayout()
+        self.gallery_content.setLayout(self.gallery_grid)
+        scroll.setWidget(self.gallery_content)
+        
+        legend = QLabel("Legend: 🟩 Green Outline = GT | 🟨 Yellow = Correct (TP) | 🟥 Red = Cell FP | 🟦 Blue = Chromo FP")
+        legend.setStyleSheet("font-weight: bold; background-color: #e0e0e0; padding: 8px; border-radius: 4px;")
+        layout.addWidget(legend)
+        layout.addWidget(scroll)
+        self.tab_gallery.setLayout(layout)
+        self.gallery_idx = 0
 
-    def save_profile(self):
+    def init_analytics_tab(self):
+        main_layout = QVBoxLayout()
+        grid_widget = QWidget()
+        layout = QGridLayout()
+        
+        self.canvas_pr = MplCanvas(self, width=5, height=4, dpi=100)
+        self.canvas_cm = MplCanvas(self, width=5, height=4, dpi=100)
+        self.canvas_iou = MplCanvas(self, width=5, height=4, dpi=100)
+        self.canvas_map_curve = MplCanvas(self, width=5, height=4, dpi=100)
+        
+        layout.addWidget(QLabel("📈 Recall / Precision (Avg)"), 0, 0)
+        layout.addWidget(self.canvas_pr, 1, 0)
+        layout.addWidget(QLabel("📊 Confusion Matrix"), 0, 1)
+        layout.addWidget(self.canvas_cm, 1, 1)
+        layout.addWidget(QLabel("🎯 IoU Distribution"), 2, 0)
+        layout.addWidget(self.canvas_iou, 3, 0)
+        layout.addWidget(QLabel("📉 mAP vs. IoU Threshold"), 2, 1)
+        layout.addWidget(self.canvas_map_curve, 3, 1)
+        
+        grid_widget.setLayout(layout)
+        
+        self.stats_text = QTextEdit()
+        self.stats_text.setReadOnly(True)
+        self.stats_text.setMaximumHeight(150)
+        self.stats_text.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #f0f0f0; padding: 10px;")
+        self.stats_text.setText("Waiting for results...")
+        
+        main_layout.addWidget(grid_widget)
+        main_layout.addWidget(self.stats_text)
+        self.tab_analytics.setLayout(main_layout)
+
+    def _browse(self, line, is_dir):
+        if is_dir: path = QFileDialog.getExistingDirectory(self)
+        else: path, _ = QFileDialog.getOpenFileName(self, "Select Weights", filter="Weights (*.h5)")
+        if path: line.setText(path)
+
+    def save_profile_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Profile", "profile_eval.json", "JSON Files (*.json)")
+        if not path: return
         profile = {
             'dataset': self.dataset_input.text(),
             'weights': self.weights_input.text(),
-            'output': self.output_input.text(),
-            'limit': self.limit_field.text(),
-            'use_cpu': self.cpu_checkbox.isChecked()
+            'output': self.output_input.text(), # 🔥 Saved output path
+            'limit': self.limit_input.text(),
+            'use_cpu': self.cpu_chk.isChecked(),
+            'ignore_fp': self.ignore_fp_chk.isChecked()
         }
-        with open("profile_eval.json", "w") as f:
-            json.dump(profile, f)
-        print("✅ Profile saved!")
-
-    def load_profile(self):
         try:
-            if os.path.exists("profile_eval.json"):
-                with open("profile_eval.json") as f:
-                    profile = json.load(f)
-                self.dataset_input.setText(profile.get('dataset', ''))
-                self.weights_input.setText(profile.get('weights', ''))
-                self.output_input.setText(profile.get('output', ''))
-                self.limit_field.setText(str(profile.get('limit', '100')))
-                self.cpu_checkbox.setChecked(profile.get('use_cpu', False))
-                print("✅ Profile loaded!")
-            else:
-                print("ℹ️ No profile found.")
-        except Exception as e:
-            print(f"❌ Failed to load profile: {e}")
+            with open(path, "w") as f: json.dump(profile, f)
+            self.log_text.append(f"💾 Profile saved to {os.path.basename(path)}")
+        except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
-    def append_log(self, text):
-        cursor = self.result_text.textCursor()
-        cursor.movePosition(cursor.End)
-        cursor.insertText(text)
-        self.result_text.setTextCursor(cursor)
-        self.result_text.ensureCursorVisible()
+    def load_profile_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load Profile", "", "JSON Files (*.json)")
+        if not path: return
+        self._load_from_path(path)
 
-    def update_progress(self, current, total):
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
+    def auto_load_default(self):
+        if os.path.exists("profile_eval_dashboard.json"): self._load_from_path("profile_eval_dashboard.json")
+        elif os.path.exists("profile_eval.json"): self._load_from_path("profile_eval.json")
 
-    def update_status(self, msg):
-        self.status_label.setText(msg)
+    def _load_from_path(self, path):
+        try:
+            with open(path) as f: profile = json.load(f)
+            self.dataset_input.setText(profile.get('dataset', ''))
+            self.weights_input.setText(profile.get('weights', ''))
+            self.output_input.setText(profile.get('output', '')) # 🔥 Load output path
+            self.limit_input.setText(profile.get('limit', '50'))
+            self.cpu_chk.setChecked(profile.get('use_cpu', False))
+            self.ignore_fp_chk.setChecked(profile.get('ignore_fp', True))
+            self.log_text.append(f"📂 Loaded: {os.path.basename(path)}")
+        except Exception as e: self.log_text.append(f"❌ Error loading {path}: {e}")
 
-    def start_evaluation(self):
+    def start_eval(self):
+        self.gallery_idx = 0
+        for i in reversed(range(self.gallery_grid.count())): 
+            self.gallery_grid.itemAt(i).widget().setParent(None)
+        
         dataset_path = self.dataset_input.text()
         weights_path = self.weights_input.text()
         output_path = self.output_input.text()
-
+        
         if not os.path.exists(dataset_path) or not os.path.exists(weights_path):
-            QMessageBox.critical(self, "Error", "Invalid dataset or weights path!")
+            QMessageBox.warning(self, "Path Error", "Please check dataset or weights path.")
             return
         
-        if not os.path.exists(output_path):
-            try:
-                os.makedirs(output_path)
-            except:
-                pass
+        # Create output folder if specified
+        if output_path and not os.path.exists(output_path):
+            try: os.makedirs(output_path)
+            except: pass
 
-        try:
-            limit = int(self.limit_field.text())
-        except ValueError:
-            limit = 100
-
-        self.eval_btn.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.result_text.clear()
-        self.status_label.setText("Initializing...")
-
-        self.thread = EvaluationThread(
-            dataset_path, 
-            weights_path, 
-            output_path, 
-            limit, 
-            self.cpu_checkbox.isChecked()
-        )
+        self.run_btn.setEnabled(False)
+        self.log_text.append("🚀 Starting Evaluation...")
+        try: limit = int(self.limit_input.text())
+        except: limit = 50
         
-        self.thread.progress_signal.connect(self.update_progress)
-        self.thread.status_signal.connect(self.update_status)
+        self.thread = EvaluationThread(dataset_path, weights_path, output_path, limit, self.cpu_chk.isChecked(), self.ignore_fp_chk.isChecked())
+        self.thread.status_signal.connect(lambda s: self.log_text.append(s))
+        self.thread.progress_signal.connect(self.progress.setValue)
+        self.thread.result_image_signal.connect(self.add_image_to_gallery)
         self.thread.finished_signal.connect(self.on_finished)
-        self.thread.error_signal.connect(self.on_error)
-        
+        self.thread.error_signal.connect(lambda s: QMessageBox.critical(self, "Error", s))
         self.thread.start()
 
-    def on_finished(self, result_msg):
-        self.eval_btn.setEnabled(True)
-        self.status_label.setText("Evaluation Finished")
-        QMessageBox.information(self, "Done", "Evaluation Finished successfully.")
+    def add_image_to_gallery(self, image, title):
+        h, w, ch = image.shape
+        bytes_per_line = ch * w
+        q_img = QImage(image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_img)
+        label = QLabel()
+        label.setPixmap(pixmap.scaled(256, 256, Qt.KeepAspectRatio))
+        label.setToolTip(title)
+        label.setFrameStyle(QFrame.Box)
+        row = self.gallery_idx // 4
+        col = self.gallery_idx % 4
+        self.gallery_grid.addWidget(label, row, col)
+        self.gallery_idx += 1
 
-    def on_error(self, error_msg):
-        self.eval_btn.setEnabled(True)
-        self.status_label.setText("Error")
-        print(f"❌ CRITICAL ERROR: {error_msg}")
-        QMessageBox.critical(self, "Error", f"An error occurred:\n{error_msg}")
+    def on_finished(self, stats):
+        self.run_btn.setEnabled(True)
+        self.log_text.append("✅ Evaluation Complete!")
+        self.update_graphs(stats)
+        self.tabs.setCurrentIndex(2) 
 
-    def closeEvent(self, event):
-        # Restore original streams on exit
-        sys.stdout = self.original_stdout
-        sys.stderr = self.original_stderr
-        super().closeEvent(event)
+    def update_graphs(self, stats):
+        txt = f"<b>Total Images:</b> {len(stats['precisions'])}<br>"
+        txt += f"<b>Mean Recall (IoU 0.5):</b> {np.mean(stats['recalls']):.4f}<br>"
+        txt += f"<b>Mean Precision (IoU 0.5):</b> {np.mean(stats['precisions']):.4f}<br>"
+        txt += f"<b>Mean IoU:</b> {np.mean(stats['ious']):.4f}<br>"
+        txt += f"<b>mAP @ IoU 0.5:</b> {stats['mAP_05']:.4f}<br>"
+        if self.ignore_fp_chk.isChecked():
+            txt += "<br><font color='red'>⚠️ [Mode: Ignore False Positives] Precision is calculated based on GT detection only.</font>"
+        self.stats_text.setHtml(txt)
+        
+        self.canvas_iou.axes.clear()
+        self.canvas_iou.axes.hist(stats['ious'], bins=20, color='#ff9800', edgecolor='black', alpha=0.7)
+        self.canvas_iou.axes.set_title("IoU Distribution")
+        self.canvas_iou.axes.set_xlabel("IoU Score")
+        self.canvas_iou.draw()
+        
+        self.canvas_pr.axes.clear()
+        self.canvas_pr.axes.plot(stats['recalls'], label='Recall', color='#2196f3', linewidth=2)
+        self.canvas_pr.axes.plot(stats['precisions'], label='Precision', color='#4caf50', linestyle='--', linewidth=2)
+        self.canvas_pr.axes.legend()
+        self.canvas_pr.axes.set_title("Recall & Precision (IoU 0.5)")
+        self.canvas_pr.axes.grid(True, linestyle=':', alpha=0.6)
+        self.canvas_pr.draw()
+        
+        self.canvas_cm.axes.clear()
+        cm_data = stats['cm_data']
+        if cm_data:
+            cm = np.zeros((3, 3), dtype=int)
+            for t, p in cm_data:
+                if t < 3 and p < 3: cm[t, p] += 1
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=self.canvas_cm.axes,
+                        xticklabels=['BG', 'Cell', 'Chromo'], yticklabels=['BG', 'Cell', 'Chromo'])
+            self.canvas_cm.axes.set_ylabel('True Label')
+            self.canvas_cm.axes.set_xlabel('Pred Label')
+            self.canvas_cm.draw()
+
+        self.canvas_map_curve.axes.clear()
+        x = stats['curve_x']
+        y = stats['curve_y']
+        
+        self.canvas_map_curve.axes.plot(x, y, marker='o', linestyle='-', color='#9c27b0', linewidth=2)
+        self.canvas_map_curve.axes.set_title("mAP vs. IoU Threshold")
+        self.canvas_map_curve.axes.set_xlabel("IoU Threshold")
+        self.canvas_map_curve.axes.set_ylabel("mAP")
+        self.canvas_map_curve.axes.set_ylim(0, 1.05)
+        self.canvas_map_curve.axes.grid(True, linestyle='--', alpha=0.7)
+        self.canvas_map_curve.draw()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

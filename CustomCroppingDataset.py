@@ -23,7 +23,7 @@ def convert_to_polygons(data):
     polygons = [[[x, y] for x, y in zip(d['all_points_x'], d['all_points_y'])] for d in data]
     return polygons
 
-def are_polygons_close(polygon1, polygon2, threshold=1000):
+def are_polygons_close(polygon1, polygon2, threshold=512):
     """檢查兩個多邊形是否靠近 (用於分組)"""
     p1 = np.asarray(polygon1)
     p2 = np.asarray(polygon2)
@@ -77,43 +77,66 @@ def crop_by_polygon(image, polygon):
 
     return padded_image, polygon
 
-def crop_by_group(image, group):
-    """裁切一整組多邊形，並更新相對座標"""
-    # 找出該組的邊界框
+def crop_by_group(image, group, margin=20):
+    """裁切一整組多邊形，並更新相對座標 (修正版：置中 + Margin)"""
+    # 1. 找出該組的邊界框 (Bounding Box)
     all_points_x = [p[0] for polygon in group for p in polygon]
     all_points_y = [p[1] for polygon in group for p in polygon]
     
-    border_x_min, border_x_max = np.min(all_points_x), np.max(all_points_x)
-    border_y_min, border_y_max = np.min(all_points_y), np.max(all_points_y)
+    min_x, max_x = np.min(all_points_x), np.max(all_points_x)
+    min_y, max_y = np.min(all_points_y), np.max(all_points_y)
 
-    border_polygon = np.array([
-        [border_x_min, border_y_min],
-        [border_x_max, border_y_min],
-        [border_x_max, border_y_max],
-        [border_x_min, border_y_max]
-    ])
-
-    try:
-        cropped_image, _ = crop_by_polygon(image, border_polygon)
-    except Exception as e:
-        print(f"Error cropping group: {e}")
+    # 2. 加入 Margin (防止貼邊，並確保不超出圖片範圍)
+    img_h, img_w = image.shape[:2]
+    x1 = int(max(0, min_x - margin))
+    y1 = int(max(0, min_y - margin))
+    x2 = int(min(img_w, max_x + margin))
+    y2 = int(min(img_h, max_y + margin))
+    
+    # 3. 裁切 (這裡不再做 bitwise_and 遮罩，保留背景 Context)
+    cropped_image = image[y1:y2, x1:x2]
+    
+    # 防呆：如果切出來是空的
+    if cropped_image.size == 0: 
         return None, None
+    
+    # 4. Padding 成正方形 (改為置中對齊)
+    h_crop, w_crop = cropped_image.shape[:2]
+    target_dim = max(h_crop, w_crop)
+    
+    delta_w = target_dim - w_crop
+    delta_h = target_dim - h_crop
+    top = delta_h // 2
+    bottom = delta_h - top
+    left = delta_w // 2
+    right = delta_w - left
+    
+    # 補黑邊
+    padded_image = cv2.copyMakeBorder(
+        cropped_image, top, bottom, left, right, 
+        cv2.BORDER_CONSTANT, value=[0,0,0]
+    )
 
-    # 更新多邊形座標 (減去裁切點)
+    # 5. 更新多邊形座標
+    # 新座標 = 原始座標 - 裁切起點 (x1, y1) + Padding 偏移 (left, top)
     updated_polygons = []
     for polygon in group:
-        updated_polygon = [[point[0] - border_x_min, point[1] - border_y_min] for point in polygon]
+        updated_polygon = []
+        for point in polygon:
+            new_x = point[0] - x1 + left
+            new_y = point[1] - y1 + top
+            updated_polygon.append([new_x, new_y])
         updated_polygons.append(convert_to_polygon_dict(updated_polygon))
         
-    return cropped_image, updated_polygons
+    return padded_image, updated_polygons
 
 # =================================================================================
 # Ray Worker: 負責並行讀取、裁切與寫入 SSD
 # =================================================================================
-
 @ray.remote
-def load_annotations(annotation, subset_dir, class_id, cache_dir="/home/e814/Documents/dataset-sq"):
-    # 1. 讀取 JSON
+def load_annotations(annotation, subset_dir, class_id, cache_dir):
+    TARGET_DIM = 512 
+
     try:
         data = json.load(open(os.path.join(subset_dir, annotation)))
     except Exception as e:
@@ -125,35 +148,64 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir="/home/e814/Doc
 
     images = []
     
-    # 確保 SSD 快取目錄存在
     if cache_dir is None:
-        # 預設路徑 (如果沒傳入的話)
         cache_dir = os.path.join(subset_dir, "temp_crops")
-    
     os.makedirs(cache_dir, exist_ok=True)
 
     for a in annotations:
-        # 解析 Polygons
         if type(a['regions']) is dict:
-            polygons = [r['shape_attributes'] for r in a['regions'].values()]
+            raw_polygons = [r['shape_attributes'] for r in a['regions'].values()]
         else:
-            polygons = [r['shape_attributes'] for r in a['regions']]
+            raw_polygons = [r['shape_attributes'] for r in a['regions']]
         
-        # 讀取原始大圖
+        # --- [新增過濾邏輯] 排除寬高過小的標註 ---
+        valid_polygons_list = []
+        for p in raw_polygons:
+            # 取得多邊形的所有 X 和 Y
+            all_x = p.get('all_points_x', [])
+            all_y = p.get('all_points_y', [])
+            
+            if len(all_x) < 3: # 至少要三個點才能構成面
+                continue
+                
+            w = max(all_x) - min(all_x)
+            h = max(all_y) - min(all_y)
+            
+            # 只保留寬高都大於 1 像素的標註
+            if w > 1 and h > 1:
+                valid_polygons_list.append(p)
+        
+        # 如果這張圖過濾後一個標註都沒有，就跳過
+        if not valid_polygons_list:
+            continue
+        # ---------------------------------------
+
         image_path = os.path.join(subset_dir, a['filename'])
         image = cv2.imread(image_path)
         if image is None:
             continue
             
-        # 分組與裁切
-        groups = group_polygons(convert_to_polygons(polygons))
+        # 使用過濾後的 valid_polygons_list 進行分組
+        groups = group_polygons(convert_to_polygons(valid_polygons_list))
         polygon_id = 0
         
         for group in groups:
             cropped_image, updated_polygons = crop_by_group(image, group)
             
             if cropped_image is not None and cropped_image.size > 0:
-                # 建立存放資料夾
+                h, w = cropped_image.shape[:2]
+                
+                if h != TARGET_DIM or w != TARGET_DIM:
+                    scale = TARGET_DIM / max(h, w)
+                    cropped_image = cv2.resize(cropped_image, (TARGET_DIM, TARGET_DIM))
+                    
+                    new_polygons = []
+                    for poly in updated_polygons:
+                        new_x = [x * scale for x in poly['all_points_x']]
+                        new_y = [y * scale for y in poly['all_points_y']]
+                        new_polygons.append({'all_points_x': new_x, 'all_points_y': new_y})
+                    updated_polygons = new_polygons
+
                 filename_no_ext = remove_file_extension(a['filename'])
                 sub_dir = os.path.join(cache_dir, filename_no_ext)
                 os.makedirs(sub_dir, exist_ok=True)
@@ -161,17 +213,14 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir="/home/e814/Doc
                 output_filename = os.path.join(sub_dir, f"{polygon_id}.png")
                 polygon_id += 1
                 
-                # 寫入 SSD (如果檔案不存在才寫)
                 try:
-                    if not os.path.isfile(output_filename):
-                        cv2.imwrite(output_filename, cropped_image)
+                    cv2.imwrite(output_filename, cropped_image)
                 except Exception as e:
                     print(f"Failed to write crop: {e}")
                     continue
 
-                # 加入裁切後的圖片資訊
                 images.append({
-                    'image_id': output_filename, # ID 即路徑
+                    'image_id': output_filename,
                     'path': output_filename,
                     'width': cropped_image.shape[1],
                     'height': cropped_image.shape[0],
@@ -180,7 +229,6 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir="/home/e814/Doc
                 })
                 
     return images
-
 # =================================================================================
 # 主 Dataset 類別
 # =================================================================================
@@ -286,20 +334,30 @@ class CustomCroppingDataset(utils.Dataset):
         # 注意：這裡不需要 return
 
     def load_mask(self, image_id):
-        """高速 Mask 生成函數 (使用 OpenCV)"""
         info = self.image_info[image_id]
-        mask = np.zeros([info["height"], info["width"], len(info["polygons"])], dtype=np.uint8)
+        # 建立總 Mask 容器 (H, W, N)
+        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+                        dtype=np.uint8)
 
         for i, p in enumerate(info["polygons"]):
+            # 1. 轉換座標
             pts = np.vstack((p['all_points_x'], p['all_points_y'])).astype(np.int32).T
             
-            # Clip 座標
+            # 2. 座標限制 (Clip) 防止超出邊界
             pts[:, 0] = np.clip(pts[:, 0], 0, info["width"] - 1)
             pts[:, 1] = np.clip(pts[:, 1], 0, info["height"] - 1)
 
-            # 填色
-            cv2.fillPoly(mask[:, :, i], [pts], color=1)
-        
+            # 3. [修正] 建立一個連續的暫存層來畫圖
+            # OpenCV 需要連續的記憶體，不能直接畫在 mask[:, :, i] 這種切片上
+            temp_mask = np.zeros((info["height"], info["width"]), dtype=np.uint8)
+            
+            # 畫在暫存層 (這是安全的)
+            cv2.fillPoly(temp_mask, [pts], color=1)
+            
+            # 將畫好的暫存層複製回總 Mask (這也是安全的)
+            mask[:, :, i] = temp_mask
+
+        # 回傳 mask (bool) 和 class_ids
         return mask.astype(np.bool_), np.array(info['num_ids'], dtype=np.int32)
 
     def save_json(self, subset):
