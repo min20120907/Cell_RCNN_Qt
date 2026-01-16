@@ -83,127 +83,320 @@ def compute_backbone_shapes(config, image_shape):
         [[int(math.ceil(image_shape[0] / stride)),
             int(math.ceil(image_shape[1] / stride))]
             for stride in config.BACKBONE_STRIDES])
+from tensorflow.keras.utils import register_keras_serializable
+
+############################################################
+#  1) Production-Grade Custom Layer: MHSA2D
+############################################################
+
+@register_keras_serializable(package="custom")
+class MHSA2D(KL.Layer):
+    """
+    Production-ready MHSA for (B, H, W, C).
+    - Depthwise Conv positional injection (CPE-ish)
+    - Pre-Norm
+    - Token reshape with tf.shape (no Lambda)
+    - Output projection + dropout
+    - Full serialization (get_config)
+    """
+    def __init__(self, num_heads=4, key_dim=32, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.num_heads = int(num_heads)
+        self.key_dim = int(key_dim)
+        self.dropout_rate = float(dropout_rate)
+
+    def build(self, input_shape):
+        channels = input_shape[-1]
+        if channels is None:
+            raise ValueError("MHSA2D requires a defined channel dimension. (input_shape[-1] is None)")
+        self.channels = int(channels)
+
+        pfx = self.name  # 命名安全
+
+        # Positional injection (bias 通常不需要)
+        self.pos_dw = KL.DepthwiseConv2D(
+            kernel_size=3, padding="same", use_bias=False, name=f"{pfx}_pos_dw"
+        )
+
+        self.ln = KL.LayerNormalization(epsilon=1e-6, name=f"{pfx}_ln")
+
+        self.mha = KL.MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_dim=self.key_dim,
+            dropout=self.dropout_rate,
+            name=f"{pfx}_mha",
+        )
+
+        self.proj = KL.Conv2D(self.channels, (1, 1), padding="same", name=f"{pfx}_proj")
+        self.proj_drop = KL.Dropout(self.dropout_rate, name=f"{pfx}_proj_drop")
+
+        super().build(input_shape)
+
+    def call(self, inputs, training=None):
+        # A) positional injection
+        x = inputs + self.pos_dw(inputs)
+
+        # B) pre-norm
+        y = self.ln(x)
+
+        # C) flatten to tokens (B, HW, C)
+        shp = tf.shape(y)
+        B, H, W = shp[0], shp[1], shp[2]
+        HW = H * W
+        y_flat = tf.reshape(y, [B, HW, self.channels])
+
+        # D) MHSA + residual on tokens
+        attn = self.mha(y_flat, y_flat, training=training)
+        y_flat = y_flat + attn
+
+        # E) unflatten back to (B, H, W, C)
+        y = tf.reshape(y_flat, [B, H, W, self.channels])
+
+        # F) projection + dropout
+        y = self.proj(y)
+        y = self.proj_drop(y, training=training)
+
+        # G) final residual
+        return x + y
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({
+            "num_heads": self.num_heads,
+            "key_dim": self.key_dim,
+            "dropout_rate": self.dropout_rate,
+        })
+        return cfg
 
 
 ############################################################
-#  Resnet Graph
+#  2) ELANW Helpers
 ############################################################
 
-# Code adopted from:
-# https://github.com/fchollet/deep-learning-models/blob/master/resnet50.py
+def conv_bn_act(x, ch, k=3, s=1, name="cba", use_bias=True, train_bn=True):
+    x = KL.Conv2D(ch, (k, k), strides=(s, s), padding="same",
+                 use_bias=use_bias, name=f"{name}_conv")(x)
+    x = BatchNorm(name=f"{name}_bn")(x, training=train_bn)
+    x = KL.Activation("relu", name=f"{name}_relu")(x)
+    return x
+
+
+def elanw_2d(x, out_ch, mid_ch=None, name="elanw", use_bias=True, train_bn=True):
+    """
+    ELANW-like aggregation block (輕量多分支聚合 + 1x1 fuse)
+    """
+    if mid_ch is None:
+        mid_ch = max(16, out_ch // 2)
+
+    # reduce
+    y0 = KL.Conv2D(mid_ch, (1, 1), padding="same", use_bias=use_bias, name=f"{name}_rconv")(x)
+    y0 = BatchNorm(name=f"{name}_rbn")(y0, training=train_bn)
+    y0 = KL.Activation("relu", name=f"{name}_rrelu")(y0)
+
+    # branches
+    y1 = conv_bn_act(y0, mid_ch, k=3, s=1, name=f"{name}_b1", use_bias=use_bias, train_bn=train_bn)
+    y2 = conv_bn_act(y1, mid_ch, k=3, s=1, name=f"{name}_b2", use_bias=use_bias, train_bn=train_bn)
+
+    # concat + fuse
+    cat = KL.Concatenate(axis=-1, name=f"{name}_cat")([y0, y1, y2])
+    out = KL.Conv2D(out_ch, (1, 1), padding="same", use_bias=use_bias, name=f"{name}_fconv")(cat)
+    out = BatchNorm(name=f"{name}_fbn")(out, training=train_bn)
+    out = KL.Activation("relu", name=f"{name}_frelu")(out)
+    return out
+
+
+############################################################
+#  3) Modified ResNet Blocks (可開關 + MHSA 參數可調)
+############################################################
 
 def identity_block(input_tensor, kernel_size, filters, stage, block,
-                   use_bias=True, train_bn=True):
-    """The identity_block is the block that has no conv layer at shortcut
-    # Arguments
-        input_tensor: input tensor
-        kernel_size: default 3, the kernel size of middle conv layer at main path
-        filters: list of integers, the nb_filters of 3 conv layer at main path
-        stage: integer, current stage label, used for generating layer names
-        block: 'a','b'..., current block label, used for generating layer names
-        use_bias: Boolean. To use or not use a bias in conv layers.
-        train_bn: Boolean. Train or freeze Batch Norm layers
+                   use_bias=True, train_bn=True,
+                   use_elanw=False, use_mhsa=False,
+                   mhsa_heads=4, mhsa_key_dim=32, mhsa_drop=0.1):
+    """
+    identity_block with toggles:
+    - use_elanw: replace 3x3 conv with ELANW
+    - use_mhsa: append MHSA after spatial processing (BoTNet style)
     """
     nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    conv_name_base = f"res{stage}{block}_branch"
+    bn_name_base = f"bn{stage}{block}_branch"
 
-    x = KL.Conv2D(nb_filter1, (1, 1), name=conv_name_base + '2a',
-                  use_bias=use_bias)(input_tensor)
-    x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
+    # 1) 1x1 reduce
+    x = KL.Conv2D(nb_filter1, (1, 1), use_bias=use_bias, name=conv_name_base + "2a")(input_tensor)
+    x = BatchNorm(name=bn_name_base + "2a")(x, training=train_bn)
+    x = KL.Activation("relu")(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
+    # 2) spatial
+    if use_elanw:
+        x = elanw_2d(
+            x, out_ch=nb_filter2, mid_ch=max(16, nb_filter2 // 2),
+            name=conv_name_base + "elanw", use_bias=use_bias, train_bn=train_bn
+        )
+    else:
+        x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding="same",
+                      use_bias=use_bias, name=conv_name_base + "2b")(x)
+        x = BatchNorm(name=bn_name_base + "2b")(x, training=train_bn)
+        x = KL.Activation("relu")(x)
 
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base + '2c',
-                  use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
+    # 3) optional MHSA (after spatial)
+    if use_mhsa:
+        x = MHSA2D(num_heads=mhsa_heads, key_dim=mhsa_key_dim, dropout_rate=mhsa_drop,
+                   name=conv_name_base + "mhsa")(x)
 
+    # 4) 1x1 expand
+    x = KL.Conv2D(nb_filter3, (1, 1), use_bias=use_bias, name=conv_name_base + "2c")(x)
+    x = BatchNorm(name=bn_name_base + "2c")(x, training=train_bn)
+
+    # 5) shortcut + out
     x = KL.Add()([x, input_tensor])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
+    x = KL.Activation("relu", name=f"res{stage}{block}_out")(x)
     return x
 
 
 def conv_block(input_tensor, kernel_size, filters, stage, block,
-               strides=(2, 2), use_bias=True, train_bn=True):
-    """conv_block is the block that has a conv layer at shortcut
-    # Arguments
-        input_tensor: input tensor
-        kernel_size: default 3, the kernel size of middle conv layer at main path
-        filters: list of integers, the nb_filters of 3 conv layer at main path
-        stage: integer, current stage label, used for generating layer names
-        block: 'a','b'..., current block label, used for generating layer names
-        use_bias: Boolean. To use or not use a bias in conv layers.
-        train_bn: Boolean. Train or freeze Batch Norm layers
-    Note that from stage 3, the first conv layer at main path is with subsample=(2,2)
-    And the shortcut should have subsample=(2,2) as well
+               strides=(2, 2), use_bias=True, train_bn=True,
+               use_elanw=False, use_mhsa=False,
+               mhsa_heads=4, mhsa_key_dim=32, mhsa_drop=0.1):
+    """
+    conv_block with toggles, shortcut has conv with strides.
+    Note: spatial block uses stride=1 because stride is handled in 2a + shortcut.
     """
     nb_filter1, nb_filter2, nb_filter3 = filters
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    conv_name_base = f"res{stage}{block}_branch"
+    bn_name_base = f"bn{stage}{block}_branch"
 
+    # 1) 1x1 reduce (with strides)
     x = KL.Conv2D(nb_filter1, (1, 1), strides=strides,
-                  name=conv_name_base + '2a', use_bias=use_bias)(input_tensor)
-    x = BatchNorm(name=bn_name_base + '2a')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
+                  use_bias=use_bias, name=conv_name_base + "2a")(input_tensor)
+    x = BatchNorm(name=bn_name_base + "2a")(x, training=train_bn)
+    x = KL.Activation("relu")(x)
 
-    x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding='same',
-                  name=conv_name_base + '2b', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2b')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
+    # 2) spatial
+    if use_elanw:
+        x = elanw_2d(
+            x, out_ch=nb_filter2, mid_ch=max(16, nb_filter2 // 2),
+            name=conv_name_base + "elanw", use_bias=use_bias, train_bn=train_bn
+        )
+    else:
+        x = KL.Conv2D(nb_filter2, (kernel_size, kernel_size), padding="same",
+                      use_bias=use_bias, name=conv_name_base + "2b")(x)
+        x = BatchNorm(name=bn_name_base + "2b")(x, training=train_bn)
+        x = KL.Activation("relu")(x)
 
-    x = KL.Conv2D(nb_filter3, (1, 1), name=conv_name_base +
-                  '2c', use_bias=use_bias)(x)
-    x = BatchNorm(name=bn_name_base + '2c')(x, training=train_bn)
+    # 3) optional MHSA
+    if use_mhsa:
+        x = MHSA2D(num_heads=mhsa_heads, key_dim=mhsa_key_dim, dropout_rate=mhsa_drop,
+                   name=conv_name_base + "mhsa")(x)
 
+    # 4) 1x1 expand
+    x = KL.Conv2D(nb_filter3, (1, 1), use_bias=use_bias, name=conv_name_base + "2c")(x)
+    x = BatchNorm(name=bn_name_base + "2c")(x, training=train_bn)
+
+    # shortcut
     shortcut = KL.Conv2D(nb_filter3, (1, 1), strides=strides,
-                         name=conv_name_base + '1', use_bias=use_bias)(input_tensor)
-    shortcut = BatchNorm(name=bn_name_base + '1')(shortcut, training=train_bn)
+                         use_bias=use_bias, name=conv_name_base + "1")(input_tensor)
+    shortcut = BatchNorm(name=bn_name_base + "1")(shortcut, training=train_bn)
 
     x = KL.Add()([x, shortcut])
-    x = KL.Activation('relu', name='res' + str(stage) + block + '_out')(x)
+    x = KL.Activation("relu", name=f"res{stage}{block}_out")(x)
     return x
 
 
-def resnet_graph(input_image, architecture, stage5=False, train_bn=True):
-    """Build a ResNet graph.
-        architecture: Can be resnet50 or resnet101
-        stage5: Boolean. If False, stage5 of the network is not created
-        train_bn: Boolean. Train or freeze Batch Norm layers
+############################################################
+#  4) ResNet Graph (真正落實：Stage2/3 Standard, Stage4 ELANW+late MHSA)
+############################################################
+
+def resnet_graph(input_image, architecture, stage5=False, train_bn=True,
+                 mhsa_heads=4, mhsa_key_dim=32, mhsa_drop=0.1):
+    """
+    Build a ResNet graph with:
+    - Stage 2/3: standard
+    - Stage 4: ELANW for all blocks, MHSA only for last 3 identity blocks
+    - Stage 5 (optional): ELANW for all blocks, MHSA for last 2 identity blocks (b,c)
     """
     assert architecture in ["resnet50", "resnet101"]
-    # Stage 1
+
+    # Stage 1 (standard)
     x = KL.ZeroPadding2D((3, 3))(input_image)
-    x = KL.Conv2D(64, (7, 7), strides=(2, 2), name='conv1', use_bias=True)(x)
-    x = BatchNorm(name='bn_conv1')(x, training=train_bn)
-    x = KL.Activation('relu')(x)
+    x = KL.Conv2D(64, (7, 7), strides=(2, 2), name="conv1", use_bias=True)(x)
+    x = BatchNorm(name="bn_conv1")(x, training=train_bn)
+    x = KL.Activation("relu")(x)
     C1 = x = KL.MaxPooling2D((3, 3), strides=(2, 2), padding="same")(x)
-    # Stage 2
-    x = conv_block(x, 3, [64, 64, 256], stage=2, block='a', strides=(1, 1), train_bn=train_bn)
-    x = identity_block(x, 3, [64, 64, 256], stage=2, block='b', train_bn=train_bn)
-    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block='c', train_bn=train_bn)
-    # Stage 3
-    x = conv_block(x, 3, [128, 128, 512], stage=3, block='a', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='b', train_bn=train_bn)
-    x = identity_block(x, 3, [128, 128, 512], stage=3, block='c', train_bn=train_bn)
-    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block='d', train_bn=train_bn)
-    # Stage 4
-    x = conv_block(x, 3, [256, 256, 1024], stage=4, block='a', train_bn=train_bn)
+
+    # Stage 2 (standard: use_elanw=False, use_mhsa=False)
+    x = conv_block(x, 3, [64, 64, 256], stage=2, block="a",
+                   strides=(1, 1), train_bn=train_bn,
+                   use_elanw=False, use_mhsa=False,
+                   mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+    x = identity_block(x, 3, [64, 64, 256], stage=2, block="b",
+                       train_bn=train_bn,
+                       use_elanw=False, use_mhsa=False,
+                       mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+    C2 = x = identity_block(x, 3, [64, 64, 256], stage=2, block="c",
+                            train_bn=train_bn,
+                            use_elanw=False, use_mhsa=False,
+                            mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+
+    # Stage 3 (standard)
+    x = conv_block(x, 3, [128, 128, 512], stage=3, block="a",
+                   train_bn=train_bn,
+                   use_elanw=False, use_mhsa=False,
+                   mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block="b",
+                       train_bn=train_bn,
+                       use_elanw=False, use_mhsa=False,
+                       mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+    x = identity_block(x, 3, [128, 128, 512], stage=3, block="c",
+                       train_bn=train_bn,
+                       use_elanw=False, use_mhsa=False,
+                       mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+    C3 = x = identity_block(x, 3, [128, 128, 512], stage=3, block="d",
+                            train_bn=train_bn,
+                            use_elanw=False, use_mhsa=False,
+                            mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+
+    # Stage 4 (ELANW all, MHSA only last 3 identity blocks)
+    x = conv_block(x, 3, [256, 256, 1024], stage=4, block="a",
+                   train_bn=train_bn,
+                   use_elanw=True, use_mhsa=False,   # conv_block 不開 MHSA
+                   mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+
     block_count = {"resnet50": 5, "resnet101": 22}[architecture]
     for i in range(block_count):
-        x = identity_block(x, 3, [256, 256, 1024], stage=4, block=chr(98 + i), train_bn=train_bn)
+        # identity blocks are b,c,d,... (ASCII: 'b' = 98)
+        blk = chr(98 + i)
+        is_last_few = (i >= block_count - 3)
+
+        x = identity_block(
+            x, 3, [256, 256, 1024], stage=4, block=blk,
+            train_bn=train_bn,
+            use_elanw=True,
+            use_mhsa=is_last_few,
+            mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop
+        )
     C4 = x
-    # Stage 5
+
+    # Stage 5 (optional)
     if stage5:
-        x = conv_block(x, 3, [512, 512, 2048], stage=5, block='a', train_bn=train_bn)
-        x = identity_block(x, 3, [512, 512, 2048], stage=5, block='b', train_bn=train_bn)
-        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block='c', train_bn=train_bn)
+        x = conv_block(x, 3, [512, 512, 2048], stage=5, block="a",
+                       train_bn=train_bn,
+                       use_elanw=True, use_mhsa=False,   # conv_block 不開 MHSA
+                       mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+        # Stage5 identity blocks 少，這裡建議 b,c 都開 MHSA
+        x = identity_block(x, 3, [512, 512, 2048], stage=5, block="b",
+                           train_bn=train_bn,
+                           use_elanw=True, use_mhsa=True,
+                           mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
+        C5 = x = identity_block(x, 3, [512, 512, 2048], stage=5, block="c",
+                                train_bn=train_bn,
+                                use_elanw=True, use_mhsa=True,
+                                mhsa_heads=mhsa_heads, mhsa_key_dim=mhsa_key_dim, mhsa_drop=mhsa_drop)
     else:
         C5 = None
+
     return [C1, C2, C3, C4, C5]
+
 
 
 ############################################################
@@ -2309,8 +2502,6 @@ class MaskRCNN(object):
         policy = Policy('mixed_float16')
         set_global_policy(policy)
 
-        
-
         # Set trainable layers
         self.set_trainable(layers)
 
@@ -2354,7 +2545,7 @@ class MaskRCNN(object):
             train_generator,
             initial_epoch=self.epoch,
             epochs=epochs,
-            steps_per_epoch=1000,
+            steps_per_epoch=steps_per_epoch,
             callbacks=callbacks,
             validation_data=val_generator,
             validation_steps=50,
