@@ -311,9 +311,9 @@ class trainingThread(QtCore.QThread):
         
         # 1. CustomConfig
         class CustomConfig(Config):
-            NAME = "cell"
+            NAME = "cell_mhsa_elanw_"
             GPU_COUNT = 1
-            IMAGES_PER_GPU = 1 
+            IMAGES_PER_GPU = 4
             NUM_CLASSES = 1 + 2
             
             # 🔥 [Mean Pixel] 優先使用 COCO 標準值以利泛化
@@ -332,7 +332,7 @@ class trainingThread(QtCore.QThread):
             USE_MINI_MASK = False        
             MASK_POOL_SIZE = 14          
             
-            DETECTION_MIN_CONFIDENCE = 0.5 
+            DETECTION_MIN_CONFIDENCE = 0.8 
             RPN_NMS_THRESHOLD = 0.7
             
             IMAGE_MIN_DIM = 512
@@ -351,7 +351,7 @@ class trainingThread(QtCore.QThread):
         class EvalInferenceConfig(CustomConfig):
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
-            DETECTION_MIN_CONFIDENCE = 0.5
+            DETECTION_MIN_CONFIDENCE = 0.8
 
         def dataset_progress_callback(current, total):
             self.progressBar_setMaximum.emit(total)
@@ -404,10 +404,10 @@ class trainingThread(QtCore.QThread):
         config.display()
         model = modellib.MaskRCNN(mode="training", config=config, model_dir=self.WORK_DIR+"/logs")
         
-        weights_path = self.weight_path
-        if not os.path.exists(weights_path): utils.download_trained_weights(weights_path)
-        self.update_training_status.emit(f"Loading weights: {os.path.basename(weights_path)}")
-        model.load_weights(weights_path, by_name=True, exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask", "rpn_model"])
+        # weights_path = self.weight_path
+        # if not os.path.exists(weights_path): utils.download_trained_weights(weights_path)
+        # self.update_training_status.emit(f"Loading weights: {os.path.basename(weights_path)}")
+        # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask", "rpn_model"])
 
         # 4. Callbacks Init
         model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(), model_dir=self.WORK_DIR+"/logs")

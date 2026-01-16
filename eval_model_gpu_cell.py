@@ -64,7 +64,7 @@ class InferenceConfig(Config):
     # 🔥 [關鍵] 關閉 Mini Mask (銳利邊緣)
     USE_MINI_MASK = False
     
-    DETECTION_MIN_CONFIDENCE = 0.5
+    DETECTION_MIN_CONFIDENCE = 0.8
     DETECTION_MAX_INSTANCES = 100
     DETECTION_NMS_THRESHOLD = 0.3
     
