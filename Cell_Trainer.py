@@ -1,7 +1,32 @@
+import os
 import sys
+
+
+def _has_graphical_display():
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+if __name__ == "__main__":
+    cli_args = sys.argv[1:]
+    requested_headless = "--headless" in cli_args
+    has_display = _has_graphical_display()
+
+    if requested_headless or not has_display:
+        from Cell_Trainer_headless import main as headless_main
+
+        forwarded_args = [arg for arg in cli_args if arg != "--headless"]
+        if not requested_headless and not forwarded_args:
+            print("No graphical display detected. Cell_Trainer.py is a GUI application.")
+            print("Use headless mode instead:")
+            print("  python Cell_Trainer.py --headless --dataset-path <DATASET_DIR> --work-dir <WORK_DIR>")
+            print("For all options:")
+            print("  python Cell_Trainer.py --headless --help")
+            sys.exit(1)
+
+        sys.exit(headless_main(forwarded_args))
+
 import json
 import ray
-import os
 import subprocess # 用來啟動 tensorboard
 from datetime import datetime
 from PyQt5 import QtCore, QtGui, QtWidgets
