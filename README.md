@@ -165,6 +165,36 @@ Once removed, run `python Cell_Trainer.py` again, and the GUI should launch corr
 
 -----
 
+### ❌ Error: "Authorization required" / "could not connect to display"
+
+If you are connected through SSH, running inside a server container, or otherwise do not have a valid X/Wayland display session, the Qt GUI cannot start.
+
+Use the new headless CLI mode instead:
+
+```bash
+python Cell_Trainer.py --headless \
+  --dataset-path "/path/to/dataset" \
+  --work-dir "/path/to/work_dir" \
+  --weight-path "/path/to/mask_rcnn_coco.h5" \
+  --epochs 100 \
+  --steps 1000 \
+  --confidence 0.9
+```
+
+You can also load defaults from `profile.json` and override only what you need:
+
+```bash
+python Cell_Trainer.py --headless --profile profile.json --steps 1500
+```
+
+For all available options:
+
+```bash
+python Cell_Trainer.py --headless --help
+```
+
+-----
+
 ### Where to place this?
 
 I recommend placing this new section **immediately after** the **"🚀 Getting Started: Installation"** section and **before** the **"📖 Step-by-Step Guide"**. This ensures users see it right after they finish installing dependencies, which is when the error usually occurs.
