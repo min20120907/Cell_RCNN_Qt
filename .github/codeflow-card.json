@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "runs": [
+    {
+      "at": "2026-05-20T07:55:22.518Z",
+      "sha": "cc2e1b2889e359cfaf4520d102bea40ec66189d3",
+      "pr": null,
+      "actor": "min20120907",
+      "files": 81,
+      "functions": 764,
+      "loc": 22481,
+      "languages": 6,
+      "topLanguages": [
+        {
+          "ext": "py",
+          "pct": 98,
+          "lines": 21925
+        },
+        {
+          "ext": "md",
+          "pct": 1,
+          "lines": 213
+        },
+        {
+          "ext": "csv",
+          "pct": 1,
+          "lines": 196
+        },
+        {
+          "ext": "txt",
+          "pct": 1,
+          "lines": 127
+        },
+        {
+          "ext": "sh",
+          "pct": 0,
+          "lines": 18
+        }
+      ],
+      "dead": 23,
+      "deadPct": 3,
+      "circular": 1,
+      "godObjects": 1,
+      "avgCoupling": 6.3,
+      "securityIssues": 1,
+      "patterns": 8,
+      "duplicates": 87,
+      "layerViolations": 0,
+      "connections": 511,
+      "avgFnLines": 11.8,
+      "longestFn": 16,
+      "testFiles": 0,
+      "testRatio": 0,
+      "topFolders": [
+        {
+          "name": "root",
+          "count": 65
+        },
+        {
+          "name": "mrcnn",
+          "count": 10
+        },
+        {
+          "name": "livecell",
+          "count": 3
+        },
+        {
+          "name": "PymageJ",
+          "count": 3
+        }
+      ],
+      "folders": 4,
+      "grade": "C",
+      "score": 77,
+      "topBlast": {
+        "path": "test-mp2.py",
+        "direct": 30,
+        "transitive": 53,
+        "total": 83
+      },
+      "fragility": [
+        {
+          "path": "test-mp2.py",
+          "direct": 30,
+          "transitive": 53,
+          "total": 83
+        },
+        {
+          "path": "mrcnn/utils.py",
+          "direct": 38,
+          "transitive": 43,
+          "total": 81
+        },
+        {
+          "path": "mrcnn/model_eager.py",
+          "direct": 25,
+          "transitive": 43,
+          "total": 68
+        }
+      ]
+    }
+  ]
+}
