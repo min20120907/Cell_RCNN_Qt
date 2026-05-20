@@ -6,6 +6,7 @@ Built on top of the robust **Mask R-CNN** framework, this application provides a
 
 ![App Screenshot](https://raw.githubusercontent.com/min20120907/Cell_RCNN_Qt/master/data/demo.png)
 
+<img src=".github/codeflow-card.svg" alt="CodeFlow card" />
 ---
 
 ## ✨ Full Feature Set
