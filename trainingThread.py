@@ -326,8 +326,8 @@ class trainingThread(QtCore.QThread):
             TRAIN_ROIS_PER_IMAGE = 512 
             RPN_TRAIN_ANCHORS_PER_IMAGE = 512
             PRE_NMS_LIMIT = 9000 
-            MAX_GT_INSTANCES = 100
-            DETECTION_MAX_INSTANCES = 100
+            MAX_GT_INSTANCES = 256
+            DETECTION_MAX_INSTANCES = 256
             
             USE_MINI_MASK = False        
             MASK_POOL_SIZE = 14          
@@ -404,17 +404,25 @@ class trainingThread(QtCore.QThread):
         config.display()
         model = modellib.MaskRCNN(mode="training", config=config, model_dir=self.WORK_DIR+"/logs")
         
-        # weights_path = self.weight_path
-        # if not os.path.exists(weights_path): utils.download_trained_weights(weights_path)
-        # self.update_training_status.emit(f"Loading weights: {os.path.basename(weights_path)}")
-        # model.load_weights(weights_path, by_name=True, exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask", "rpn_model"])
-
+        # 🔥 載入預訓練權重。by_name=True 會自動跳過對不上的層：
+        #    Stage4/5 的 ELANW/MHSA 新層保持隨機，其餘標準 ResNet 照常載入。
+        weights_path = self.weight_path
+        if not os.path.exists(weights_path):
+            utils.download_trained_weights(weights_path)
+        self.update_training_status.emit(f"Loading weights: {os.path.basename(weights_path)}")
+        model.load_weights(
+            weights_path, by_name=True,
+            exclude=["mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask", "rpn_model"]
+        )
+        # 核對：印出實際載入/跳過層數，確認 Stage1~3 的標準 ResNet 真的吃到權重
+        print(f"[Weights] Loaded from: {weights_path}")
         # 4. Callbacks Init
         model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(), model_dir=self.WORK_DIR+"/logs")
         
+        # 🔥 訓練中用 val 監看；dataset_test 留到全部訓練結束後再單獨評估一次
         mean_average_precision_callback = MeanAveragePrecisionCallback(
-            model, model_inference, dataset_test, 
-            calculate_map_at_every_X_epoch=5, 
+            model, model_inference, dataset_val,
+            calculate_map_at_every_X_epoch=5,
             verbose=1, dataset_limit=20, thread_instance=self
         )
         
