@@ -88,22 +88,23 @@ from tensorflow.keras.utils import register_keras_serializable
 ############################################################
 #  1) Production-Grade Custom Layer: MHSA2D
 ############################################################
-
 @register_keras_serializable(package="custom")
 class MHSA2D(KL.Layer):
     """
     Production-ready MHSA for (B, H, W, C).
-    - Depthwise Conv positional injection (CPE-ish)
-    - Pre-Norm
-    - Token reshape with tf.shape (no Lambda)
-    - Output projection + dropout
-    - Full serialization (get_config)
+    - Depthwise Conv 位置注入 (CPE-ish)
+    - Pre-Norm，單一乾淨殘差
+    - fp32 attention（穩定 mixed_float16 下的 softmax）
+    - LayerScale（gamma 初始極小，讓新分支從近似 identity 起步）
+    - Full serialization
     """
-    def __init__(self, num_heads=4, key_dim=32, dropout_rate=0.1, **kwargs):
+    def __init__(self, num_heads=4, key_dim=32, dropout_rate=0.1,
+                 layerscale_init=1e-4, **kwargs):
         super().__init__(**kwargs)
         self.num_heads = int(num_heads)
         self.key_dim = int(key_dim)
         self.dropout_rate = float(dropout_rate)
+        self.layerscale_init = float(layerscale_init)
 
     def build(self, input_shape):
         channels = input_shape[-1]
@@ -111,24 +112,32 @@ class MHSA2D(KL.Layer):
             raise ValueError("MHSA2D requires a defined channel dimension. (input_shape[-1] is None)")
         self.channels = int(channels)
 
-        pfx = self.name  # 命名安全
+        pfx = self.name
 
-        # Positional injection (bias 通常不需要)
         self.pos_dw = KL.DepthwiseConv2D(
             kernel_size=3, padding="same", use_bias=False, name=f"{pfx}_pos_dw"
         )
-
         self.ln = KL.LayerNormalization(epsilon=1e-6, name=f"{pfx}_ln")
 
+        # 🔥 attention 釘在 float32，避免 fp16 softmax 數值不穩
         self.mha = KL.MultiHeadAttention(
             num_heads=self.num_heads,
             key_dim=self.key_dim,
             dropout=self.dropout_rate,
             name=f"{pfx}_mha",
+            dtype="float32",
         )
 
         self.proj = KL.Conv2D(self.channels, (1, 1), padding="same", name=f"{pfx}_proj")
         self.proj_drop = KL.Dropout(self.dropout_rate, name=f"{pfx}_proj_drop")
+
+        # 🔥 LayerScale：每 channel 一個可學習縮放，初始極小
+        self.gamma = self.add_weight(
+            name=f"{pfx}_layerscale",
+            shape=(self.channels,),
+            initializer=tf.keras.initializers.Constant(self.layerscale_init),
+            trainable=True,
+        )
 
         super().build(input_shape)
 
@@ -142,22 +151,23 @@ class MHSA2D(KL.Layer):
         # C) flatten to tokens (B, HW, C)
         shp = tf.shape(y)
         B, H, W = shp[0], shp[1], shp[2]
-        HW = H * W
-        y_flat = tf.reshape(y, [B, HW, self.channels])
+        y_flat = tf.reshape(y, [B, H * W, self.channels])
 
-        # D) MHSA + residual on tokens
-        attn = self.mha(y_flat, y_flat, training=training)
-        y_flat = y_flat + attn
+        # D) MHSA in fp32；單一乾淨殘差（不在 token 上多加一次）
+        y_cast = tf.cast(y_flat, tf.float32)
+        attn = self.mha(y_cast, y_cast, training=training)
+        attn = tf.cast(attn, y_flat.dtype)
 
         # E) unflatten back to (B, H, W, C)
-        y = tf.reshape(y_flat, [B, H, W, self.channels])
+        y = tf.reshape(attn, [B, H, W, self.channels])
 
         # F) projection + dropout
         y = self.proj(y)
         y = self.proj_drop(y, training=training)
 
-        # G) final residual
-        return x + y
+        # G) LayerScale + residual（gamma 起步極小 → 近似 identity）
+        gamma = tf.cast(self.gamma, y.dtype)
+        return x + gamma * y
 
     def get_config(self):
         cfg = super().get_config()
@@ -165,10 +175,9 @@ class MHSA2D(KL.Layer):
             "num_heads": self.num_heads,
             "key_dim": self.key_dim,
             "dropout_rate": self.dropout_rate,
+            "layerscale_init": self.layerscale_init,
         })
         return cfg
-
-
 ############################################################
 #  2) ELANW Helpers
 ############################################################
@@ -2350,14 +2359,19 @@ class MaskRCNN(object):
                                 md5_hash='a268eb855778b3df3c7506639542a6af')
         return weights_path
 
-    def compile(self, learning_rate, momentum):
-        """Gets the model ready for training. Adds losses, regularization, and
-        metrics. Then calls the Keras compile() function.
+def compile(self, learning_rate, momentum, optimizer=None):
+        """Gets the model ready for training. Adds losses, regularization, and metrics.
+
+        optimizer: 若提供則直接使用（train() 會傳入包好 LossScaleOptimizer 的 Adam）；
+                   None 時才建立預設的 mixed-precision Adam。
         """
-        # Optimizer object
-        optimizer = keras.optimizers.SGD(
-            lr=learning_rate, momentum=momentum,
-            clipnorm=self.config.GRADIENT_CLIP_NORM)
+        # 🔥 預設用包了 loss scaling 的 Adam（配合 mixed_float16）
+        if optimizer is None:
+            base_optimizer = tf.keras.optimizers.Adam(
+                learning_rate=learning_rate,
+                clipnorm=self.config.GRADIENT_CLIP_NORM)
+            optimizer = tf.keras.mixed_precision.LossScaleOptimizer(base_optimizer)
+
         # Add Losses
         loss_names = [
             "rpn_class_loss",  "rpn_bbox_loss",
@@ -2372,11 +2386,12 @@ class MaskRCNN(object):
             self.keras_model.add_loss(loss)
 
         # Add L2 Regularization
-        # Skip gamma and beta weights of batch normalization layers.
+        # 🔥 排除 gamma/beta（BN）與 layerscale（不該被 weight decay 拉回 0）
         reg_losses = [
             keras.regularizers.l2(self.config.WEIGHT_DECAY)(w) / tf.cast(tf.size(input=w), tf.float32)
             for w in self.keras_model.trainable_weights
-            if 'gamma' not in w.name and 'beta' not in w.name]
+            if 'gamma' not in w.name and 'beta' not in w.name
+            and 'layerscale' not in w.name]
         self.keras_model.add_loss(tf.add_n(reg_losses))
 
         # Compile
@@ -2548,7 +2563,7 @@ class MaskRCNN(object):
             steps_per_epoch=steps_per_epoch,
             callbacks=callbacks,
             validation_data=val_generator,
-            validation_steps=50,
+            validation_steps=self.config.VALIDATION_STEPS,   # 🔥 不再寫死 50
             max_queue_size=10,
             workers=1,
             use_multiprocessing=False,
