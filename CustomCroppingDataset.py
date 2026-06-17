@@ -135,7 +135,7 @@ def crop_by_group(image, group, margin=20):
 # =================================================================================
 @ray.remote
 def load_annotations(annotation, subset_dir, class_id, cache_dir):
-    TARGET_DIM = 512 
+    TARGET_DIM = 512
 
     try:
         data = json.load(open(os.path.join(subset_dir, annotation)))
@@ -147,10 +147,16 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir):
     annotations = [a for a in annotations if a['regions']]
 
     images = []
-    
-    if cache_dir is None:
-        cache_dir = os.path.join(subset_dir, "temp_crops")
-    os.makedirs(cache_dir, exist_ok=True)
+
+    # 🔥 [非 SSD 加速] 預設 (cache_dir is None) 走「記憶體模式」：
+    #    把每張裁切結果用 PNG 編碼成 bytes 直接回傳，訓練時從 RAM 解碼，
+    #    完全不碰磁碟。原本作法是把成千上萬張小 PNG 寫進 cache_dir，
+    #    訓練時再逐張隨機讀取 —— 在 HDD 上小檔案隨機 I/O 極慢，這正是
+    #    "CustomCroppingDataset 在非 SSD 平台很慢" 的主因。
+    #    若仍想用磁碟快取 (例如資料集大到 RAM 放不下)，傳入 cache_dir 即可。
+    use_memory = cache_dir is None
+    if not use_memory:
+        os.makedirs(cache_dir, exist_ok=True)
 
     for a in annotations:
         if type(a['regions']) is dict:
@@ -207,27 +213,44 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir):
                     updated_polygons = new_polygons
 
                 filename_no_ext = remove_file_extension(a['filename'])
-                sub_dir = os.path.join(cache_dir, filename_no_ext)
-                os.makedirs(sub_dir, exist_ok=True)
-
-                output_filename = os.path.join(sub_dir, f"{polygon_id}.png")
+                crop_tag = f"{filename_no_ext}/{polygon_id}.png"
                 polygon_id += 1
-                
-                try:
-                    cv2.imwrite(output_filename, cropped_image)
-                except Exception as e:
-                    print(f"Failed to write crop: {e}")
-                    continue
 
-                images.append({
-                    'image_id': output_filename,
-                    'path': output_filename,
+                record = {
+                    'image_id': crop_tag,
+                    # 🔑 [穩定鍵] crop_key 由「來源檔名 + 該圖內分組序號」組成，
+                    #    與載入順序 / 機器 / 記憶體or磁碟模式 無關，因此可用來
+                    #    跨 run 重現切分 (train/val/test)，避免資料洩漏。
+                    'crop_key': crop_tag,
                     'width': cropped_image.shape[1],
                     'height': cropped_image.shape[0],
                     'polygons': updated_polygons,
                     'num_ids': [class_id] * len(updated_polygons)
-                })
-                
+                }
+
+                if use_memory:
+                    # 記憶體模式：PNG 編碼成 bytes 隨 record 一起回傳，不寫磁碟
+                    ok, buf = cv2.imencode('.png', cropped_image)
+                    if not ok:
+                        print(f"Failed to encode crop: {crop_tag}")
+                        continue
+                    record['image_bytes'] = buf.tobytes()
+                    record['path'] = None
+                else:
+                    # 磁碟模式 (相容舊行為)：寫成 PNG，record 帶檔案路徑
+                    sub_dir = os.path.join(cache_dir, filename_no_ext)
+                    os.makedirs(sub_dir, exist_ok=True)
+                    output_filename = os.path.join(sub_dir, f"{polygon_id - 1}.png")
+                    try:
+                        cv2.imwrite(output_filename, cropped_image)
+                    except Exception as e:
+                        print(f"Failed to write crop: {e}")
+                        continue
+                    record['image_id'] = output_filename
+                    record['path'] = output_filename
+
+                images.append(record)
+
     return images
 # =================================================================================
 # 主 Dataset 類別
@@ -236,15 +259,27 @@ def load_annotations(annotation, subset_dir, class_id, cache_dir):
 class CustomCroppingDataset(utils.Dataset):
     
     def load_image(self, image_id):
-        """讀取圖片並確保轉為 RGB 格式 (修正黑白圖問題)"""
+        """讀取圖片並確保轉為 RGB 格式 (修正黑白圖問題)
+
+        優先從記憶體中的 PNG bytes 解碼 (非 SSD 加速路徑)；
+        若沒有 bytes 才退回讀取磁碟檔 (磁碟快取模式 / 相容舊資料)。
+        """
         info = self.image_info[image_id]
-        path = info['path']
-        image = cv2.imread(path)
-        
-        if image is None:
-            print(f"Error reading image: {path}")
-            # 回傳全黑圖防止崩潰
-            return np.zeros((info['height'], info['width'], 3), dtype=np.uint8)
+
+        image_bytes = info.get('image_bytes')
+        if image_bytes is not None:
+            # 從 RAM 解碼，完全不碰磁碟
+            image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+            if image is None:
+                print(f"Error decoding in-memory image: {info.get('image_id')}")
+                return np.zeros((info['height'], info['width'], 3), dtype=np.uint8)
+        else:
+            path = info['path']
+            image = cv2.imread(path)
+            if image is None:
+                print(f"Error reading image: {path}")
+                # 回傳全黑圖防止崩潰
+                return np.zeros((info['height'], info['width'], 3), dtype=np.uint8)
 
         # 處理通道: (H, W) -> (H, W, 3)
         if len(image.shape) == 2 or image.shape[2] == 1:
@@ -320,7 +355,9 @@ class CustomCroppingDataset(utils.Dataset):
                 self.add_image(
                     'cell',
                     image_id=image_id, # 這裡 image_id 為流水號
-                    path=image['path'], # path 為 SSD 上的檔案路徑
+                    path=image.get('path'), # 磁碟模式下為檔案路徑，記憶體模式下為 None
+                    image_bytes=image.get('image_bytes'), # 記憶體模式下的 PNG bytes
+                    crop_key=image.get('crop_key'), # 🔑 跨 run 穩定的切分鍵
                     width=image['width'], height=image['height'],
                     polygons=image['polygons'],
                     num_ids=image['num_ids'])
