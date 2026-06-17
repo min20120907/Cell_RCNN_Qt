@@ -2359,7 +2359,7 @@ class MaskRCNN(object):
                                 md5_hash='a268eb855778b3df3c7506639542a6af')
         return weights_path
 
-def compile(self, learning_rate, momentum, optimizer=None):
+    def compile(self, learning_rate, momentum, optimizer=None):
         """Gets the model ready for training. Adds losses, regularization, and metrics.
 
         optimizer: 若提供則直接使用（train() 會傳入包好 LossScaleOptimizer 的 Adam）；
@@ -2535,7 +2535,7 @@ def compile(self, learning_rate, momentum, optimizer=None):
         callbacks = [
             tf.keras.callbacks.TensorBoard(log_dir=self.log_dir, histogram_freq=0, write_graph=True, write_images=True),
             tf.keras.callbacks.ModelCheckpoint(self.checkpoint_path, monitor='val_loss', save_best_only=True, verbose=1, save_weights_only=True),
-            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, verbose=1),
             tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.8, patience=5, verbose=1, min_lr=1e-6)
         ]
 
@@ -2546,7 +2546,14 @@ def compile(self, learning_rate, momentum, optimizer=None):
             callbacks += custom_callbacks
 
         # Platform-specific worker setup (for data loading)
-        workers = 0 if os.name == 'nt' else 32
+        # 🔥 [OOM 修正] 原本在 Linux 寫死 32 個 worker thread，每個 thread 都會各自
+        #    建立一份完整 batch (images + masks) 並塞進 queue。在 64GB RAM 平台上，
+        #    32 份 batch 的瞬時記憶體足以觸發 OOM。改成依 CPU 數量自動上限 8，
+        #    既能維持資料吞吐，又把記憶體峰值壓到可控範圍。
+        if os.name == 'nt':
+            workers = 0
+        else:
+            workers = max(1, min(8, (os.cpu_count() or 4) - 1))
 
         # Determine steps per epoch
         train_steps = len(train_dataset._image_ids) // self.config.BATCH_SIZE
