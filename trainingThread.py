@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import numpy as np
 import tensorflow as tf
 import imgaug.augmenters as iaa
@@ -237,9 +238,23 @@ class MeanAveragePrecisionCallback(tf.keras.callbacks.Callback):
         return overall_APs
 
 # 🔥 [穩健] Split Dataset 重建邏輯
-def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
+# 🔒 [可重現] 固定 seed + 存檔切分 ID，讓評估 (evaluation.py) 能拿到「完全相同
+#    且未被訓練看過」的 held-out 測試集，杜絕資料洩漏。
+SPLIT_SEED = 42
+
+def split_dataset(dataset, train_percentage, val_percentage, test_percentage,
+                  seed=SPLIT_SEED, split_save_path=None):
+    """Split a CustomCroppingDataset into train/val/test.
+
+    Reproducible because:
+    * the shuffle uses a FIXED-seed ``np.random.RandomState(seed)``, and
+    * the split is recorded by each crop's stable ``crop_key`` (source filename
+      + in-image group index) — independent of load order — so the exact split
+      can be reloaded later by ``evaluation.py``.
+    """
     all_ids = np.array(dataset.image_ids)
-    np.random.shuffle(all_ids)
+    rng = np.random.RandomState(seed)          # 🔒 固定種子，不再用全域 shuffle
+    rng.shuffle(all_ids)
 
     n = len(all_ids)
     train_size = int(n * train_percentage)
@@ -248,6 +263,32 @@ def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
     train_ids = all_ids[:train_size]
     val_ids   = all_ids[train_size:train_size + val_size]
     test_ids  = all_ids[train_size + val_size:]
+
+    def _keys(ids):
+        # 以穩定的 crop_key 表示切分 (找不到 crop_key 時退回 path)
+        return [str(dataset.image_info[i].get("crop_key")
+                    or dataset.image_info[i].get("path")
+                    or dataset.image_info[i].get("id"))
+                for i in ids]
+
+    # 💾 存檔：之後 evaluation.py 可用同一份 JSON 重建一模一樣的 held-out 切分
+    if split_save_path:
+        try:
+            os.makedirs(os.path.dirname(split_save_path), exist_ok=True)
+            with open(split_save_path, "w") as f:
+                json.dump({
+                    "seed": int(seed),
+                    "fractions": [train_percentage, val_percentage, test_percentage],
+                    "counts": {"train": len(train_ids), "val": len(val_ids),
+                               "test": len(test_ids)},
+                    "train": _keys(train_ids),
+                    "val":   _keys(val_ids),
+                    "test":  _keys(test_ids),
+                }, f, indent=2, default=str)
+            print(f"[Split] saved reproducible split ids -> {split_save_path} "
+                  f"(seed={seed})")
+        except Exception as e:
+            print(f"[Split] WARNING: could not save split ids: {e}")
 
     def make_subset(sub_ids):
         sub = CustomCroppingDataset()
@@ -261,11 +302,17 @@ def split_dataset(dataset, train_percentage, val_percentage, test_percentage):
         for new_id, old_id in enumerate(sub_ids):
             info = dataset.image_info[old_id]
             src = info.get("source", "cell")
-            
+
             sub.add_image(
                 src,
                 image_id=new_id,
-                path=info["path"],
+                path=info.get("path"),
+                # 🔥 記憶體模式下，必須把 PNG bytes 一併帶進子集，否則 split 後
+                #    load_image 會找不到影像 (path=None) 而回傳全黑圖。
+                #    這裡傳的是同一個 bytes 物件的「參考」，不會複製影像資料，
+                #    所以 train/val/test 三個子集不會讓記憶體爆增 3 倍。
+                image_bytes=info.get("image_bytes"),
+                crop_key=info.get("crop_key"),  # 🔑 保留穩定切分鍵
                 width=info["width"],
                 height=info["height"],
                 polygons=info.get("polygons", []), # 確保 polygons 被帶過去
@@ -313,32 +360,42 @@ class trainingThread(QtCore.QThread):
         class CustomConfig(Config):
             NAME = "cell_mhsa_elanw_"
             GPU_COUNT = 1
-            IMAGES_PER_GPU = 4
+            # 🔥 [OOM 修正] 在 64GB RAM 平台上，IMAGES_PER_GPU=4 搭配 full-size mask
+            #    會把 host RAM 撐爆。降到 2 可大幅降低資料管線的記憶體峰值，
+            #    若你的 GPU/RAM 充裕可再調回 4。
+            IMAGES_PER_GPU = 2
             NUM_CLASSES = 1 + 2
-            
+
             # 🔥 [Mean Pixel] 優先使用 COCO 標準值以利泛化
             # 若發現 Loss 很怪或收斂極慢，可改回 dataset 專屬值: np.array([85.6, 85.6, 85.6])
             MEAN_PIXEL = np.array([123.7, 116.8, 103.9])
-            
+
             RPN_ANCHOR_SCALES = (32, 64, 128, 256, 512)
             BACKBONE_STRIDES = [4, 8, 16, 32, 64]
             RPN_ANCHOR_RATIOS = [0.75, 1, 1.33, 1.6]
-            TRAIN_ROIS_PER_IMAGE = 512 
+            TRAIN_ROIS_PER_IMAGE = 512
             RPN_TRAIN_ANCHORS_PER_IMAGE = 512
-            PRE_NMS_LIMIT = 9000 
+            PRE_NMS_LIMIT = 9000
             MAX_GT_INSTANCES = 256
             DETECTION_MAX_INSTANCES = 256
-            
-            USE_MINI_MASK = False        
-            MASK_POOL_SIZE = 14          
-            
-            DETECTION_MIN_CONFIDENCE = 0.8 
+
+            # 🔥 [OOM 主因修正] USE_MINI_MASK=False 會讓每個 instance 都存一張
+            #    512x512 的 full mask。當 MAX_GT_INSTANCES=256 時，單一 batch 的
+            #    gt_masks 就是 (BATCH, 512, 512, 256) ≈ 數百 MB，再乘上多個 data
+            #    loader worker 與 queue，直接吃光 64GB RAM。
+            #    改用 mini-mask 後，mask 縮成 56x56，記憶體降低約 80 倍，
+            #    且 mAP 幾乎不受影響 (MRCNN 內部本就以 mask head 28x28 訓練)。
+            USE_MINI_MASK = True
+            MINI_MASK_SHAPE = (56, 56)
+            MASK_POOL_SIZE = 14
+
+            DETECTION_MIN_CONFIDENCE = 0.8
             RPN_NMS_THRESHOLD = 0.7
-            
+
             IMAGE_MIN_DIM = 512
             IMAGE_MAX_DIM = 512
             IMAGE_RESIZE_MODE = "square"
-            
+
             LOSS_WEIGHTS = {
                 "rpn_class_loss": 1.0, "rpn_bbox_loss": 1.5,
                 "mrcnn_class_loss": 1.0, "mrcnn_bbox_loss": 1.5, "mrcnn_mask_loss": 1.0
@@ -351,7 +408,11 @@ class trainingThread(QtCore.QThread):
         class EvalInferenceConfig(CustomConfig):
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
-            DETECTION_MIN_CONFIDENCE = 0.8
+            # 🔥 [mAP 最大化] 評估/mAP 計算時，DETECTION_MIN_CONFIDENCE 必須調低。
+            #    compute_ap 會依 score 排序所有偵測結果畫 PR 曲線；若門檻過高 (0.8)
+            #    會把低分但正確的偵測丟掉，人為壓低 recall → mAP 被低估。
+            #    產品端偵測仍可用高門檻，但「衡量 mAP」要用低門檻才接近真實值。
+            DETECTION_MIN_CONFIDENCE = 0.05
 
         def dataset_progress_callback(current, total):
             self.progressBar_setMaximum.emit(total)
@@ -362,8 +423,12 @@ class trainingThread(QtCore.QThread):
         dataset.load_custom(self.dataset_path, "train", progress_callback=dataset_progress_callback)
         dataset.prepare()
         
-        # Split Dataset
-        train_set, val_set, test_set = split_dataset(dataset, 0.7, 0.15, 0.15)
+        # Split Dataset (fixed seed + persist split ids so evaluation.py can
+        # reuse the EXACT same held-out test set -> no train/test leakage).
+        split_save_path = os.path.join(self.WORK_DIR, "logs", "dataset_split.json")
+        train_set, val_set, test_set = split_dataset(
+            dataset, 0.7, 0.15, 0.15,
+            seed=SPLIT_SEED, split_save_path=split_save_path)
         dataset_train = train_set
         dataset_val = val_set
         dataset_test = test_set
@@ -389,7 +454,7 @@ class trainingThread(QtCore.QThread):
             self.update_training_status.emit("✅ Sanity Check Passed.")
 
         aug_cell = iaa.Sequential([
-            iaa.Fliplr(0.5), iaa.Flipud(0.5), 
+            iaa.Fliplr(0.5), iaa.Flipud(0.5),
             iaa.SomeOf((0, 2), [
                 iaa.Affine(rotate=90), iaa.Affine(rotate=180), iaa.Affine(rotate=270),
                 iaa.Affine(rotate=(-20, 20)), iaa.Affine(scale=(0.8, 1.2)),
@@ -397,6 +462,15 @@ class trainingThread(QtCore.QThread):
                 iaa.AdditiveGaussianNoise(scale=(0, 0.03*255)),
                 iaa.LinearContrast((0.8, 1.2)),
             ])
+        ])
+
+        # 🔥 [mAP] 暖身階段用輕量 aug (只翻轉/旋轉)，讓 heads 在不引入過強雜訊的
+        #    情況下也能看到資料多樣性，比 augmentation=None 更利於泛化。
+        aug_light = iaa.Sequential([
+            iaa.Fliplr(0.5), iaa.Flipud(0.5),
+            iaa.Sometimes(0.5, iaa.OneOf([
+                iaa.Affine(rotate=90), iaa.Affine(rotate=180), iaa.Affine(rotate=270),
+            ]))
         ])
 
         # 3. Model Init
@@ -420,10 +494,13 @@ class trainingThread(QtCore.QThread):
         model_inference = modellib.MaskRCNN(mode="inference", config=EvalInferenceConfig(), model_dir=self.WORK_DIR+"/logs")
         
         # 🔥 訓練中用 val 監看；dataset_test 留到全部訓練結束後再單獨評估一次
+        # 🔥 [mAP 穩定度] dataset_limit=20 取樣太少，mAP 抖動大、不利於判斷收斂。
+        #    取整個 val set (上限 100 張) 讓 mAP 數值更穩定可靠。
+        map_eval_limit = min(100, len(dataset_val.image_ids))
         mean_average_precision_callback = MeanAveragePrecisionCallback(
             model, model_inference, dataset_val,
             calculate_map_at_every_X_epoch=5,
-            verbose=1, dataset_limit=20, thread_instance=self
+            verbose=1, dataset_limit=map_eval_limit, thread_instance=self
         )
         
         live_status_callback = LiveStatusCallback(self)
@@ -438,12 +515,15 @@ class trainingThread(QtCore.QThread):
         # -------------------------
         self.update_training_status.emit("Stage 1: Training Heads (Warm-up)")
 
+        # 註：MRCNN 的 epochs 是「絕對目標 epoch」，非疊加；每個 stage 都有
+        #     EarlyStopping(patience) 與 ReduceLROnPlateau 守門，所以下面的數字是
+        #     上限，實際會在 val_loss 不再下降時提前停。
         model.config.LEARNING_RATE = 1e-3  # Stage1 通常可稍大
         model.train(
             dataset_train, dataset_val,
-            epochs=80,                 # 會被 EarlyStopping 提前停
+            epochs=40,                  # 暖身：heads 收斂很快，40 上限足夠
             layers='heads',
-            augmentation=None,   # 建議 light aug（如果你沒有就先用 aug_cell）
+            augmentation=aug_light,     # 🔥 改用輕量 aug，比 None 更利於泛化
             custom_callbacks=callbacks_list,
             verbose=0
         )
@@ -456,9 +536,9 @@ class trainingThread(QtCore.QThread):
         model.config.LEARNING_RATE = 1e-4
         model.train(
             dataset_train, dataset_val,
-            epochs=220,
+            epochs=160,                 # 主力微調階段
             layers='4+',
-            augmentation=aug_cell,      # 你原本那套 heavy aug
+            augmentation=aug_cell,      # 完整 heavy aug
             custom_callbacks=callbacks_list,
             verbose=0
         )
@@ -471,9 +551,9 @@ class trainingThread(QtCore.QThread):
         model.config.LEARNING_RATE = 1e-5
         model.train(
             dataset_train, dataset_val,
-            epochs=400,                 # 你原本 400 的精神放這裡更合理
+            epochs=300,                 # 全網路精修，低 LR 慢慢逼近最佳 mAP
             layers='all',
-            augmentation=aug_cell,      # 或者你可以再更「保守」一點的 aug
+            augmentation=aug_cell,
             custom_callbacks=callbacks_list,
             verbose=0
         )
